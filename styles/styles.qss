@@ -83,7 +83,7 @@ QPushButton[spread="true"] {
     outline: none; /* 去除默认的聚焦轮廓 */
 }
 #page_1 QLabel#folderLabel{
-    border: 1px solid #4CAF50; /* 浅灰色边框 */
+    border: 1px solid #4CAF50;
 /*    border-radius: 4px; *//* 圆角边框 */
     padding: 4px; /* 内边距 */
 }

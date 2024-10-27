@@ -1,3 +1,5 @@
+import os
+
 from PyQt6 import QtWidgets, QtGui, QtCore
 from PyQt6.QtCore import QUrl, Qt, QTimer
 from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
@@ -68,6 +70,10 @@ class Page1Widget(QWidget):
         super(Page1Widget, self).__init__(parent)
 
         self.current_video_index = 0
+        self.found_videos = 0
+        # 视频列表和索引
+        self.video_list = []  # 视频路径列表
+        self.responses = []
 
         self.main_layout = QVBoxLayout(self)
         self.main_layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -86,9 +92,9 @@ class Page1Widget(QWidget):
         self.folder_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.folder_label.setObjectName("folderLabel")
 
-        folder_layout = QHBoxLayout()
-        folder_layout.addWidget(self.folder_button)
-        folder_layout.addWidget(self.folder_label)
+        self.folder_layout = QHBoxLayout()
+        self.folder_layout.addWidget(self.folder_button)
+        self.folder_layout.addWidget(self.folder_label)
 
         self.submit_button = QPushButton("开始")
         self.submit_button.setFixedWidth(80)
@@ -104,13 +110,9 @@ class Page1Widget(QWidget):
 
         # 将控件添加到布局
         self.main_layout.addWidget(self.name_input, alignment=Qt.AlignmentFlag.AlignCenter)
-        self.main_layout.addLayout(folder_layout)
+        self.main_layout.addLayout(self.folder_layout)
         self.main_layout.addWidget(self.submit_button, alignment=Qt.AlignmentFlag.AlignCenter)
         self.main_layout.addWidget(self.video_widget)
-
-        # 视频列表和索引
-        self.video_list = [r'D:\movies\testing_1.mp4', r'D:\movies\testing_2.mp4']  # 视频路径列表
-        self.responses = []
 
         # 连接按钮点击事件
         self.submit_button.clicked.connect(self.submit_)
@@ -126,13 +128,17 @@ class Page1Widget(QWidget):
         self.video_widget.mouseDoubleClickEvent = self.toggle_full_screen
 
     def select_folder(self):
+        self.video_list = []
+        self.found_videos = 0
         # 打开文件夹选择对话框
         folder_path = QFileDialog.getExistingDirectory(self, "选择文件夹")
         if folder_path:
             # 显示所选文件夹路径
-            self.folder_label.setText(folder_path)
-            # 可以在这里将文件夹路径保存到视频列表或其他逻辑中
-            self.video_list = [folder_path + f"/video_{i}.mp4" for i in range(1, 3)]  # 示例用途
+
+            self.video_list = [os.path.join(folder_path,f) for f in os.listdir(folder_path) if f.endswith('.mp4')]
+            self.found_videos = len(self.video_list)
+            self.folder_label.setText(folder_path+f', {self.found_videos} videos found')
+
 
     def single_click(self, event):
         self.single_click_timer.start(200)
@@ -150,21 +156,33 @@ class Page1Widget(QWidget):
 
     def submit_(self):
         name = self.name_input.text().strip()
-        if name:
+        if name and self.found_videos: # 如果输入了姓名和选择了视频路径
             self.current_video_index = 0  # 当前播放的视频索引
             self.responses = []
             self.playVideo()
         else:
-            QtWidgets.QMessageBox.warning(self, "错误", "请输入姓名！")
+            QtWidgets.QMessageBox.warning(self, "错误", "请输入姓名！并选择正确的视频路径")
 
     def playVideo(self):
-        self.name_input.hide()
-        self.submit_button.hide()
-        self.video_widget.show()
+        self.show_player()
 
         video_file_path = self.video_list[self.current_video_index]
         self.player.setSource(QUrl.fromLocalFile(video_file_path))
         self.player.play()
+
+    def show_player(self):
+        self.name_input.hide()
+        self.submit_button.hide()
+        self.folder_button.hide()
+        self.folder_label.hide()
+        self.video_widget.show()
+
+    def hide_player(self):
+        self.name_input.show()
+        self.submit_button.show()
+        self.folder_button.show()
+        self.folder_label.show()
+        self.video_widget.hide()
 
     def on_media_status_changed_(self, status):
         if status == QMediaPlayer.MediaStatus.EndOfMedia:
@@ -182,9 +200,12 @@ class Page1Widget(QWidget):
                 if self.current_video_index < len(self.video_list):
                     self.playVideo()
                 else:
-                    self.video_widget.hide()
-                    self.name_input.show()
-                    self.submit_button.show()
+                    self.hide_player()
+                    self.name_input.clear()
+                    self.folder_label.clear()
+                    self.video_list.clear()
+                    self.found_videos = 0
+                    self.current_video_index = 0
                     self.update()
                     print("全部调查结果：", {name: self.responses})  # 打印最终结果
 
