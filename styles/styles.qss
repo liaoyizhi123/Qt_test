@@ -1,0 +1,99 @@
+QFame{
+	border: none; /*将所有边框设置为无*/
+	background-color:#00000000;
+}
+#base_widget{ /*baseWidget*/
+	background-color: #f9f9f9;
+}
+#top_frame{ /*顶边栏*/
+	background-color: #f9f9f9;
+}
+#left_frame{
+	background-color: #f9f9f9;
+}
+/*#page_1{ *//*stackedWidget*/
+/*	background-color: #ffffff;*/
+/*}*/
+/*#page_2{ *//*stackedWidget*/
+/*	background-color: lightgreen;*/
+/*}*/
+/*#page_3{ *//*stackedWidget*/
+/*	background-color: #708cf1;*/
+/*}*/
+/*#page_4{ *//*stackedWidget*/
+/*	background-color: #ffa135;*/
+/*}*/
+
+QLabel{
+/*	border: none;*/
+	background-color:#00000000;
+/*	color:#dfdfdf;*/
+	color:#5d5d5d;
+}
+
+QPushButton{
+	border: none;
+	color:#000000008
+}
+QPushButton:hover {
+	background-color: #ececec;
+}
+
+QPushButton[spread="true"] {
+	color: #dfdfdf;
+}
+#left_center QPushButton[selected="true"] {
+	background-color: #282c34;
+	border: none;
+	border-left: 3px solid qlineargradient(spread:pad, x1:0, y1:0.523, x2:0.971, y2:0.528682, stop:0.0511364 rgba(0, 255, 0, 255), stop:0.511364 rgba(0, 208, 0, 255), stop:0.988636 rgba(0, 179, 0, 255)); 将左侧的边框单独显示为渐变色
+}
+
+/******************************************************page1******************************************************/
+#page_1 QPushButton {
+    background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1, stop:0 #4CAF50, stop:1 #81C784);
+    color: white;
+/*    border-radius: 4px;*/
+    padding: 5px 5px;
+    font-size: 14px;
+    font-weight: bold;
+/*    border: 1px solid #4CAF50;*/
+}
+
+#page_1 QPushButton:hover {
+    background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1, stop:0 #66BB6A, stop:1 #A5D6A7);
+}
+
+#page_1 QPushButton:pressed {
+    background-color: #388E3C;
+/*    border: 1px solid #388E3C;*/
+}
+
+#page_1 QLineEdit {
+    background-color: #ECEFF1; /* 浅灰色背景 */
+    color: #333333; /* 深色文字 */
+    padding: 8px;
+    border: 1px solid #B0BEC5; /* 浅灰色边框 */
+/*    border-radius: 6px; */
+    font-size: 14px;
+}
+
+#page_1 QLineEdit:focus {
+    background-color: #FFFFFF; /* 获得焦点时背景变白 */
+    border: 1px solid #90A4AE; /* 聚焦时边框变深 */
+    outline: none; /* 去除默认的聚焦轮廓 */
+}
+#page_1 QLabel#folderLabel{
+    border: 1px solid #4CAF50; /* 浅灰色边框 */
+/*    border-radius: 4px; *//* 圆角边框 */
+    padding: 4px; /* 内边距 */
+}
+/******************************************************page1******************************************************/
+
+
+
+
+
+
+
+
+
