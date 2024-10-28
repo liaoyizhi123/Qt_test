@@ -52,10 +52,21 @@ class SurveyDialog(QDialog):
 
         layout.addRow(question2_layout)
 
+
         # 提交按钮，直接添加到布局
         self.submit_button = QPushButton("提交")
         self.submit_button.clicked.connect(self.accept)
         layout.addWidget(self.submit_button)
+
+    def accept(self):
+        if not self.question1_line_edit.text().strip():
+            return
+
+        if not self.radio_button_yes.isChecked() and not self.radio_button_no.isChecked():
+            QtWidgets.QMessageBox.warning(self, "提示", "请选择问题 2：是否愿意观看更多此类视频。")
+            return
+
+        super(SurveyDialog, self).accept()
 
     def get_answers(self, index):
         return {
@@ -127,6 +138,17 @@ class Page1Widget(QWidget):
         self.video_widget.mousePressEvent = self.single_click
         self.video_widget.mouseDoubleClickEvent = self.toggle_full_screen
 
+        self.page1_view_init()
+
+    def page1_view_init(self):
+        self.name_input.clear()
+        self.folder_label.setText("未选择文件夹")
+        self.video_list.clear()
+        self.found_videos = 0
+        self.current_video_index = 0
+        self.responses.clear()
+        # self.hide_player()
+
     def select_folder(self):
         self.video_list = []
         self.found_videos = 0
@@ -165,7 +187,7 @@ class Page1Widget(QWidget):
 
     def playVideo(self):
         self.show_player()
-
+        self.video_widget.setFullScreen(True)
         video_file_path = self.video_list[self.current_video_index]
         self.player.setSource(QUrl.fromLocalFile(video_file_path))
         self.player.play()
@@ -200,12 +222,14 @@ class Page1Widget(QWidget):
                 if self.current_video_index < len(self.video_list):
                     self.playVideo()
                 else:
-                    self.hide_player()
-                    self.name_input.clear()
-                    self.folder_label.clear()
-                    self.video_list.clear()
-                    self.found_videos = 0
-                    self.current_video_index = 0
-                    self.update()
-                    print("全部调查结果：", {name: self.responses})  # 打印最终结果
 
+                    self.hide_player()
+                    # self.name_input.clear()
+                    # self.folder_label = QLabel("未选择文件夹")
+                    # self.video_list.clear()
+                    # self.found_videos = 0
+                    # self.current_video_index = 0
+                    self.update()
+                    print({name: self.responses})  # 打印最终结果
+
+                    self.page1_view_init()
