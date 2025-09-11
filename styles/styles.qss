@@ -30,6 +30,13 @@ QLabel{
 /*	color:#dfdfdf;*/
 	color:#5d5d5d;
 }
+QLabel#proj_title {
+    font-weight: bold;
+    font-size: 20px;  /* 按需调整大小 */
+    color: #333333;   /* 可选：设定文字颜色 */
+    padding-left: 16px;
+}
+
 
 QPushButton{
 	border: none;
@@ -49,7 +56,7 @@ QPushButton[spread="true"] {
 }
 
 /******************************************************page1******************************************************/
-#page_1 QPushButton {
+#stackedWidget QPushButton {
     background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1, stop:0 #4CAF50, stop:1 #81C784);
     color: white;
 /*    border-radius: 4px;*/
@@ -59,33 +66,33 @@ QPushButton[spread="true"] {
 /*    border: 1px solid #4CAF50;*/
 }
 
-#page_1 QPushButton:hover {
+#stackedWidget QPushButton:hover {
     background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1, stop:0 #66BB6A, stop:1 #A5D6A7);
 }
 
-#page_1 QPushButton:pressed {
+#stackedWidget QPushButton:pressed {
     background-color: #388E3C;
 /*    border: 1px solid #388E3C;*/
 }
 
-#page_1 QLineEdit {
+#stackedWidget QLineEdit {
     background-color: #ECEFF1; /* 浅灰色背景 */
     color: #333333; /* 深色文字 */
-    padding: 8px;
+    padding: 5px 5px;
     border: 1px solid #B0BEC5; /* 浅灰色边框 */
 /*    border-radius: 6px; */
     font-size: 14px;
 }
 
-#page_1 QLineEdit:focus {
+#stackedWidget QLineEdit:focus {
     background-color: #FFFFFF; /* 获得焦点时背景变白 */
     border: 1px solid #90A4AE; /* 聚焦时边框变深 */
     outline: none; /* 去除默认的聚焦轮廓 */
 }
-#page_1 QLabel#folderLabel{
-    border: 1px solid #4CAF50;
+#stackedWidget QLabel{
+      border: 1px solid #4CAF50;
 /*    border-radius: 4px; *//* 圆角边框 */
-    padding: 4px; /* 内边距 */
+    padding: 5px; /* 内边距 */
 }
 /******************************************************page1******************************************************/
 
