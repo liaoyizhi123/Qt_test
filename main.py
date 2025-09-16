@@ -17,6 +17,7 @@ from page5 import Page5Widget
 from page6 import Page6Widget
 from page7 import Page7Widget
 
+
 class Ui_MainWindow(QMainWindow):
 
     def __init__(self):
@@ -76,7 +77,9 @@ class Ui_MainWindow(QMainWindow):
         self.horizontalLayout.addWidget(self.top_left, 0, QtCore.Qt.AlignmentFlag.AlignLeft)
         # top center frame, base on the top frame
         self.top_center = QtWidgets.QFrame(parent=self.top_frame)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(self.top_center.sizePolicy().hasHeightForWidth())
@@ -113,7 +116,9 @@ class Ui_MainWindow(QMainWindow):
 
         # ######################## content box, base on the app frame
         self.content_box = QtWidgets.QFrame(parent=self.app_frame)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Expanding)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Preferred, QtWidgets.QSizePolicy.Policy.Expanding
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(self.content_box.sizePolicy().hasHeightForWidth())
@@ -257,7 +262,9 @@ class Ui_MainWindow(QMainWindow):
 
         # 主内容区，基于content box
         self.main_content = QtWidgets.QFrame(parent=self.content_box)
-        sizePolicy = QtWidgets.QSizePolicy(QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred)
+        sizePolicy = QtWidgets.QSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Expanding, QtWidgets.QSizePolicy.Policy.Preferred
+        )
         sizePolicy.setHorizontalStretch(0)
         sizePolicy.setVerticalStretch(0)
         sizePolicy.setHeightForWidth(self.main_content.sizePolicy().hasHeightForWidth())
@@ -310,9 +317,16 @@ class Ui_MainWindow(QMainWindow):
         self.stackedWidget.setCurrentIndex(3)
         QtCore.QMetaObject.connectSlotsByName(MainWindow)
 
-        self.switch_page(self.btn_lef_home, self.btn_lef_new, self.btn_lef_save, 
-                         self.btn_lef_exit, self.btn_lef_stroop, self.btn_lef_ma,
-                         self.btn_lef_mi, self.stackedWidget)
+        self.switch_page(
+            self.btn_lef_home,
+            self.btn_lef_new,
+            self.btn_lef_save,
+            self.btn_lef_exit,
+            self.btn_lef_stroop,
+            self.btn_lef_ma,
+            self.btn_lef_mi,
+            self.stackedWidget,
+        )
 
     #     self.stackedWidget.currentChanged.connect(self.update_button_styles)
     #
@@ -336,9 +350,17 @@ class Ui_MainWindow(QMainWindow):
     #     elif current_index == 3:
     #         self.btn_lef_exit.setStyleSheet("background-color: #d3d3d3;")
 
-    def switch_page(self, btn_lef_home, btn_lef_new, btn_lef_save, btn_lef_exit, 
-                    btn_lef_stroop, btn_lef_ma, btn_lef_mi,
-                    stackedWidget):
+    def switch_page(
+        self,
+        btn_lef_home,
+        btn_lef_new,
+        btn_lef_save,
+        btn_lef_exit,
+        btn_lef_stroop,
+        btn_lef_ma,
+        btn_lef_mi,
+        stackedWidget,
+    ):
         btn_lef_home.clicked.connect(lambda: self.change_btn_page(0, stackedWidget))
         btn_lef_new.clicked.connect(lambda: self.change_btn_page(1, stackedWidget))
         btn_lef_save.clicked.connect(lambda: self.change_btn_page(2, stackedWidget))
@@ -421,7 +443,7 @@ class Ui_MainWindow(QMainWindow):
             self.proj_title.setText("Mental Arithmetic")
         elif current_index == 6:
             self.btn_lef_mi.setStyleSheet(selected_style)
-            self.proj_title.setText("7-Back Task")
+            self.proj_title.setText("Motor Imagery")
 
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
