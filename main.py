@@ -337,7 +337,7 @@ class Ui_MainWindow(QMainWindow):
     #         self.btn_lef_exit.setStyleSheet("background-color: #d3d3d3;")
 
     def switch_page(self, btn_lef_home, btn_lef_new, btn_lef_save, btn_lef_exit, 
-                    btn_lef_stroop, btn_lef_ma, btn_lef_7,
+                    btn_lef_stroop, btn_lef_ma, btn_lef_mi,
                     stackedWidget):
         btn_lef_home.clicked.connect(lambda: self.change_btn_page(0, stackedWidget))
         btn_lef_new.clicked.connect(lambda: self.change_btn_page(1, stackedWidget))
@@ -345,7 +345,7 @@ class Ui_MainWindow(QMainWindow):
         btn_lef_exit.clicked.connect(lambda: self.change_btn_page(3, stackedWidget))
         btn_lef_stroop.clicked.connect(lambda: self.change_btn_page(4, stackedWidget))
         btn_lef_ma.clicked.connect(lambda: self.change_btn_page(5, stackedWidget))
-        btn_lef_7.clicked.connect(lambda: self.change_btn_page(6, stackedWidget))
+        btn_lef_mi.clicked.connect(lambda: self.change_btn_page(6, stackedWidget))
         stackedWidget.setCurrentIndex(0)
 
     def change_btn_page(self, current_index, stackedWidget):
@@ -398,7 +398,7 @@ class Ui_MainWindow(QMainWindow):
         self.btn_lef_exit.setStyleSheet(default_style)
         self.btn_lef_stroop.setStyleSheet(default_style)
         self.btn_lef_ma.setStyleSheet(default_style)
-        self.btn_lef_7.setStyleSheet(default_style)
+        self.btn_lef_mi.setStyleSheet(default_style)
 
         # 根据当前页面索引设置相应按钮的高亮颜色
         if current_index == 0:
@@ -420,7 +420,7 @@ class Ui_MainWindow(QMainWindow):
             self.btn_lef_ma.setStyleSheet(selected_style)
             self.proj_title.setText("Mental Arithmetic")
         elif current_index == 6:
-            self.btn_lef_7.setStyleSheet(selected_style)
+            self.btn_lef_mi.setStyleSheet(selected_style)
             self.proj_title.setText("7-Back Task")
 
     def retranslateUi(self, MainWindow):

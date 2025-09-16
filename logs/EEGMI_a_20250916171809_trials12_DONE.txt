@@ -1,0 +1,12 @@
+4.000,9.000,快跑,prompt=4|task=5|assess=10|break=5|scale=5|rating=None|rating_label=None
+28.000,34.000,静止,prompt=4|task=6|assess=10|break=5|scale=5|rating=None|rating_label=None
+53.000,58.000,慢走,prompt=4|task=5|assess=10|break=5|scale=5|rating=None|rating_label=None
+77.000,83.000,慢跑,prompt=4|task=6|assess=10|break=5|scale=5|rating=None|rating_label=None
+102.000,107.000,慢跑,prompt=4|task=5|assess=10|break=5|scale=5|rating=None|rating_label=None
+126.000,131.000,快跑,prompt=4|task=5|assess=10|break=5|scale=5|rating=None|rating_label=None
+150.000,155.000,慢走,prompt=4|task=5|assess=10|break=5|scale=5|rating=1|rating_label=非常不同意
+174.000,181.000,静止,prompt=4|task=7|assess=10|break=5|scale=5|rating=None|rating_label=None
+200.000,205.000,慢走,prompt=4|task=5|assess=10|break=5|scale=5|rating=None|rating_label=None
+224.000,231.000,快跑,prompt=4|task=7|assess=10|break=5|scale=5|rating=None|rating_label=None
+250.000,255.000,慢跑,prompt=4|task=5|assess=10|break=5|scale=5|rating=None|rating_label=None
+274.000,279.000,静止,prompt=4|task=5|assess=10|break=5|scale=5|rating=None|rating_label=None

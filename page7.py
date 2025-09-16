@@ -39,11 +39,11 @@ class Page7Widget(QWidget):
         self.initial_countdown = 10  # 实验开始前倒计时（秒）
         self.prompt_duration = 4.0  # 默认 Prompt 时长（秒）
         self.task_min = 5.0  # 默认 Task 最小（秒）
-        self.task_max = 6.0  # 默认 Task 最大（秒）
-        self.assess_duration = 5.0  # 默认自评时长（秒）
+        self.task_max = 7.0  # 默认 Task 最大（秒）
+        self.assess_duration = 10.0  # 默认自评时长（秒）
         self.break_duration = 5.0  # 默认休息时长（秒）
         self.end_countdown = 10  # 全部结束后的倒计时（秒）
-        self.default_trials = 20  # 默认循环次数（4 的倍数）
+        self.default_trials = 12  # 默认循环次数（4 的倍数）
         self.conditions = ["慢走", "慢跑", "快跑", "静止"]
 
         # Likert 标签
@@ -77,8 +77,8 @@ class Page7Widget(QWidget):
         self.logical_ms = 0
 
         # 量表点数（3 或 5），以及当前标签引用
-        self.scale_points = 3
-        self.scale_labels = self.likert_labels_3
+        self.scale_points = 5
+        self.scale_labels = self.likert_labels_5
 
         # -------------------- UI --------------------
         root = QVBoxLayout(self)
@@ -146,9 +146,10 @@ class Page7Widget(QWidget):
 
         # 自评量表选择：3 点或 5 点
         self.scale_combo = QComboBox()
-        self.scale_combo.addItem("3 点（不同意 / 一般 / 同意）", 3)
-        self.scale_combo.addItem("5 点（非常不同意 → 非常同意）", 5)
-        self.scale_combo.setCurrentIndex(0)
+        self.scale_combo.addItem("1 - 3（不同意 / 一般 / 同意）", 3)
+        self.scale_combo.addItem("1 - 5（非常不同意 → 非常同意）", 5)
+        # 设置默认选中
+        self.scale_combo.setCurrentIndex(1)
         form.addRow("自评量表:", self.scale_combo)
 
         self.start_btn = QPushButton("开始实验")
@@ -649,9 +650,9 @@ class Page7Widget(QWidget):
         blocks = total_trials // n
         plan = []
         for _ in range(blocks):
-            block = conditions[:]      # 拷贝一份
-            random.shuffle(block)      # 只对当前 block 随机
-            plan.extend(block)         # 追加到总计划
+            block = conditions[:]  # 拷贝一份
+            random.shuffle(block)  # 只对当前 block 随机
+            plan.extend(block)  # 追加到总计划
         return plan
 
 
