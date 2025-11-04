@@ -20,12 +20,12 @@ class Page6Widget(QWidget):
 
         # 默认参数
         self.name = ""
-        self.loops = 2
-        self.trials = 4
-        self.delay = 3.0
-        self.max_operand = 20
-        self.initial_countdown = 5  # 实验开始前倒计时
-        self.rest_duration = 5      # 循环间休息倒计时
+        self.loops = 6
+        self.trials = 10
+        self.delay = 4.0
+        self.max_operand = 100
+        self.initial_countdown = 10  # 实验开始前倒计时
+        self.rest_duration = 10      # 循环间休息倒计时
 
         # 状态变量
         self.current_loop = 0
@@ -66,7 +66,7 @@ class Page6Widget(QWidget):
         self.loops_spin = QSpinBox()
         self.loops_spin.setRange(1, 10)
         self.loops_spin.setValue(self.loops)
-        form.addRow("Loops:", self.loops_spin)
+        form.addRow("Runs:", self.loops_spin)
 
         self.trials_spin = QSpinBox()
         self.trials_spin.setRange(1, 100)

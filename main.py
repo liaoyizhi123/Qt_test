@@ -16,6 +16,7 @@ from page4 import Page4Widget
 from page5 import Page5Widget
 from page6 import Page6Widget
 from page7 import Page7Widget
+from page8 import Page8Widget
 
 
 class Ui_MainWindow(QMainWindow):
@@ -237,17 +238,28 @@ class Ui_MainWindow(QMainWindow):
         self.btn_lef_ma.setIconSize(QtCore.QSize(32, 32))
         self.btn_lef_ma.setObjectName("btn_lef_ma")
         self.verticalLayout_8.addWidget(self.btn_lef_ma)
-        # 左侧MI按钮
-        self.btn_lef_mi = QtWidgets.QPushButton(parent=self.left_center)
-        self.btn_lef_mi.setMinimumSize(QtCore.QSize(0, 50))
-        self.btn_lef_mi.setMaximumSize(QtCore.QSize(16777215, 50))
-        self.btn_lef_mi.setText("")
+        # 左侧MI(Lower Limb)按钮
+        self.btn_lef_mi_lower = QtWidgets.QPushButton(parent=self.left_center)
+        self.btn_lef_mi_lower.setMinimumSize(QtCore.QSize(0, 50))
+        self.btn_lef_mi_lower.setMaximumSize(QtCore.QSize(16777215, 50))
+        self.btn_lef_mi_lower.setText("")
         icon7 = QtGui.QIcon()
         icon7.addPixmap(QtGui.QPixmap("resources/icons/book.png"), QtGui.QIcon.Mode.Normal, QtGui.QIcon.State.Off)
-        self.btn_lef_mi.setIcon(icon7)
-        self.btn_lef_mi.setIconSize(QtCore.QSize(32, 32))
-        self.btn_lef_mi.setObjectName("btn_lef_mi")
-        self.verticalLayout_8.addWidget(self.btn_lef_mi)
+        self.btn_lef_mi_lower.setIcon(icon7)
+        self.btn_lef_mi_lower.setIconSize(QtCore.QSize(32, 32))
+        self.btn_lef_mi_lower.setObjectName("btn_lef_mi")
+        self.verticalLayout_8.addWidget(self.btn_lef_mi_lower)
+        # 左侧MI(Upper Limb)按钮
+        self.btn_lef_mi_upper = QtWidgets.QPushButton(parent=self.left_center)
+        self.btn_lef_mi_upper.setMinimumSize(QtCore.QSize(0, 50))
+        self.btn_lef_mi_upper.setMaximumSize(QtCore.QSize(16777215, 50))
+        self.btn_lef_mi_upper.setText("")
+        icon8 = QtGui.QIcon()
+        icon8.addPixmap(QtGui.QPixmap("resources/icons/crown.png"), QtGui.QIcon.Mode.Normal, QtGui.QIcon.State.Off)
+        self.btn_lef_mi_upper.setIcon(icon8)
+        self.btn_lef_mi_upper.setIconSize(QtCore.QSize(32, 32))
+        self.btn_lef_mi_upper.setObjectName("btn_lef_mi_upper")
+        self.verticalLayout_8.addWidget(self.btn_lef_mi_upper)
 
         # 左侧底部的按钮
         self.verticalLayout.addWidget(self.left_center, 0, QtCore.Qt.AlignmentFlag.AlignTop)
@@ -307,6 +319,10 @@ class Ui_MainWindow(QMainWindow):
         self.page_7.setObjectName("page_7")
         self.stackedWidget.addWidget(self.page_7)
 
+        self.page_8 = Page8Widget(self.stackedWidget)
+        self.page_8.setObjectName("page_8")
+        self.stackedWidget.addWidget(self.page_8)
+
         self.verticalLayout_9.addWidget(self.stackedWidget)
         self.horizontalLayout_2.addWidget(self.main_content)
         self.verticalLayout_2.addWidget(self.content_box)
@@ -324,7 +340,8 @@ class Ui_MainWindow(QMainWindow):
             self.btn_lef_exit,
             self.btn_lef_stroop,
             self.btn_lef_ma,
-            self.btn_lef_mi,
+            self.btn_lef_mi_lower,
+            self.btn_lef_mi_upper,
             self.stackedWidget,
         )
 
@@ -358,7 +375,8 @@ class Ui_MainWindow(QMainWindow):
         btn_lef_exit,
         btn_lef_stroop,
         btn_lef_ma,
-        btn_lef_mi,
+        btn_lef_mi_lower,
+        btn_lef_mi_upper,
         stackedWidget,
     ):
         btn_lef_home.clicked.connect(lambda: self.change_btn_page(0, stackedWidget))
@@ -367,7 +385,8 @@ class Ui_MainWindow(QMainWindow):
         btn_lef_exit.clicked.connect(lambda: self.change_btn_page(3, stackedWidget))
         btn_lef_stroop.clicked.connect(lambda: self.change_btn_page(4, stackedWidget))
         btn_lef_ma.clicked.connect(lambda: self.change_btn_page(5, stackedWidget))
-        btn_lef_mi.clicked.connect(lambda: self.change_btn_page(6, stackedWidget))
+        btn_lef_mi_lower.clicked.connect(lambda: self.change_btn_page(6, stackedWidget))
+        btn_lef_mi_upper.clicked.connect(lambda: self.change_btn_page(7, stackedWidget))
         stackedWidget.setCurrentIndex(0)
 
     def change_btn_page(self, current_index, stackedWidget):
@@ -420,7 +439,8 @@ class Ui_MainWindow(QMainWindow):
         self.btn_lef_exit.setStyleSheet(default_style)
         self.btn_lef_stroop.setStyleSheet(default_style)
         self.btn_lef_ma.setStyleSheet(default_style)
-        self.btn_lef_mi.setStyleSheet(default_style)
+        self.btn_lef_mi_lower.setStyleSheet(default_style)
+        self.btn_lef_mi_upper.setStyleSheet(default_style)
 
         # 根据当前页面索引设置相应按钮的高亮颜色
         if current_index == 0:
@@ -434,16 +454,19 @@ class Ui_MainWindow(QMainWindow):
             self.proj_title.setText("N Back (1)")
         elif current_index == 3:
             self.btn_lef_exit.setStyleSheet(selected_style)
-            self.proj_title.setText("N Back (2)")
+            self.proj_title.setText("N Back (2), 按下【Start Sequence】，同时开始记录脑电信号")
         elif current_index == 4:
             self.btn_lef_stroop.setStyleSheet(selected_style)
-            self.proj_title.setText("Stroop Test")
+            self.proj_title.setText("Stroop Test, 按下【Start Stroop】，同时开始记录脑电信号")
         elif current_index == 5:
             self.btn_lef_ma.setStyleSheet(selected_style)
-            self.proj_title.setText("Mental Arithmetic")
+            self.proj_title.setText("Mental Arithmetic, 按下【Start Calculation】，同时开始记录脑电信号")
         elif current_index == 6:
-            self.btn_lef_mi.setStyleSheet(selected_style)
-            self.proj_title.setText("Motor Imagery")
+            self.btn_lef_mi_lower.setStyleSheet(selected_style)
+            self.proj_title.setText("Motor Imagery(Lower Limb), 按下【开始实验】，同时开始记录脑电信号")
+        elif current_index == 7:
+            self.btn_lef_mi_upper.setStyleSheet(selected_style)
+            self.proj_title.setText("Motor Imagery(Upper Limb), 按下【开始实验】，同时开始记录脑电信号")
 
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate

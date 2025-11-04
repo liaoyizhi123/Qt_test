@@ -26,8 +26,8 @@ class Page5Widget(QWidget):
 
         # 默认参数
         self.name = ""
-        self.loops = 2
-        self.trials = 5
+        self.loops = 6
+        self.trials = 10
         self.delay = 2.0
         self.colors_count = 6
         self.initial_countdown = 10
@@ -52,6 +52,7 @@ class Page5Widget(QWidget):
         self.instruction_label.setFont(instr_font)
         self.instruction_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.instruction_label.setWordWrap(True)
+        self.instruction_label.setMaximumWidth(400)   
         layout.addWidget(self.instruction_label)
 
         # 设置区
@@ -66,7 +67,7 @@ class Page5Widget(QWidget):
         self.loops_spin = QSpinBox()
         self.loops_spin.setRange(1, 10)
         self.loops_spin.setValue(self.loops)
-        form.addRow("Loops:", self.loops_spin)
+        form.addRow("Runs:", self.loops_spin)
 
         self.trials_spin = QSpinBox()
         self.trials_spin.setRange(5, 100)

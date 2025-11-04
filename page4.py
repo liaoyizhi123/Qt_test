@@ -22,8 +22,8 @@ class Page4Widget(QWidget):
     def __init__(self, parent=None):
         super(Page4Widget, self).__init__(parent)
         # 默认参数
-        self.loops = 2
-        self.trials = 6
+        self.loops = 6
+        self.trials = 10
         self.delay = 2.0  # 每个刺激展示时长（秒）
         self.diff = 0
         # 固定倒计时和休息时长（秒）
@@ -41,7 +41,8 @@ class Page4Widget(QWidget):
 
         # 操作提示标签
         self.instruction_label = QLabel(
-            "2 Back，请在第三个字符出现时，读出往前第2个字符的内容。"
+            "2 Back，请在第3个字符出现时，\n"
+            "写出往前第2个字符的内容"
         )
         instr_font = self.instruction_label.font()
         instr_font.setPointSize(14)
@@ -63,7 +64,7 @@ class Page4Widget(QWidget):
         self.loops_spin = QSpinBox()
         self.loops_spin.setRange(1, 10)
         self.loops_spin.setValue(self.loops)
-        form.addRow("Loops:", self.loops_spin)
+        form.addRow("Runs:", self.loops_spin)
 
         self.trials_spin = QSpinBox()
         self.trials_spin.setRange(1, 100)
@@ -79,6 +80,7 @@ class Page4Widget(QWidget):
         self.diff_combo = QComboBox()
         self.diff_combo.addItem("Digits Only")
         self.diff_combo.addItem("Digits + Letters")
+        self.diff_combo.setCurrentIndex(1)
         form.addRow("Difficulty:", self.diff_combo)
 
         self.start_btn = QPushButton("Start Sequence")

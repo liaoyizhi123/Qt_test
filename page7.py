@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QKeySequence, QShortcut
 
 
-class Page7Widget(QWidget):
+class Page7Widget(QWidget):  # 这里没有run的概念
     """
     EEG 实验范式单页组件（4 条 Task：慢走、慢跑、快跑、静止）。
     - 启动/结束倒计时：无背景，仅文字。
@@ -39,11 +39,11 @@ class Page7Widget(QWidget):
         self.initial_countdown = 10  # 实验开始前倒计时（秒）
         self.prompt_duration = 4.0  # 默认 Prompt 时长（秒）
         self.task_min = 5.0  # 默认 Task 最小（秒）
-        self.task_max = 7.0  # 默认 Task 最大（秒）
-        self.assess_duration = 10.0  # 默认自评时长（秒）
+        self.task_max = 6.0  # 默认 Task 最大（秒）
+        self.assess_duration = 5.0  # 默认自评时长（秒）
         self.break_duration = 5.0  # 默认休息时长（秒）
         self.end_countdown = 10  # 全部结束后的倒计时（秒）
-        self.default_trials = 12  # 默认循环次数（4 的倍数）
+        self.default_trials = 16  # 默认循环次数（4 的倍数）
         self.conditions = ["慢走", "慢跑", "快跑", "静止"]
 
         # Likert 标签
@@ -107,7 +107,7 @@ class Page7Widget(QWidget):
         self.trials_spin.setRange(4, 4000)
         self.trials_spin.setSingleStep(4)  # 只能以 4 步增减
         self.trials_spin.setValue(self.default_trials)
-        form.addRow("循环次数(试次):", self.trials_spin)
+        form.addRow("循环次数(Trials):", self.trials_spin)
 
         # 可配置时长
         self.prompt_spin = QSpinBox()
@@ -274,7 +274,7 @@ class Page7Widget(QWidget):
 
         self.trial_logs = []
         self.trial_index = -1
-        self.logical_ms = 0  # 逻辑时间线复位（首个 prompt 起点=0）
+        self.logical_ms = int(self.initial_countdown * 1000)  # 逻辑时间线复位（首个 prompt 起点=0）
 
         # 初始倒计时（无背景色）
         self._show_fullscreen_message(
