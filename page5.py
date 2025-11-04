@@ -19,6 +19,16 @@ COLOR_OPTIONS = [
     ("白", "white"),
 ]
 
+# 英文色值 -> 中文名（用于日志里把 'black' 转回 '黑'）
+COLOR_NAME_MAP = {
+    "red": "红",
+    "yellow": "黄",
+    "blue": "蓝",
+    "green": "绿",
+    "black": "黑",
+    "white": "白",
+}
+
 class Page5Widget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -36,7 +46,9 @@ class Page5Widget(QWidget):
         self.current_loop = 0
         self.current_index = 0
         self.sequence = []
-        self.results_per_loop = []
+        self.results_per_loop = []   # 存布尔：是否答对
+        self.details_per_loop = []   # 存日志明细：(word_cn, color_en, 'T'/'F'/'N')
+        self.responded = False       # 本 trial 是否已作答
 
         # 主布局
         layout = QVBoxLayout(self)
@@ -52,7 +64,7 @@ class Page5Widget(QWidget):
         self.instruction_label.setFont(instr_font)
         self.instruction_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.instruction_label.setWordWrap(True)
-        self.instruction_label.setMaximumWidth(400)   
+        self.instruction_label.setMaximumWidth(400)
         layout.addWidget(self.instruction_label)
 
         # 设置区
@@ -158,6 +170,7 @@ class Page5Widget(QWidget):
         # 初始化
         self.current_loop = 1
         self.results_per_loop = [[] for _ in range(self.loops)]
+        self.details_per_loop = [[] for _ in range(self.loops)]
 
         # 进入初始倒计时
         self.name_input.parent().hide()
@@ -177,19 +190,22 @@ class Page5Widget(QWidget):
             self.start_loop()
 
     def start_loop(self):
-        # 序列生成...
+        # 生成序列：颜色均匀 + 相邻颜色不重复；一半congruent一半incongruent
         opts = COLOR_OPTIONS[:self.colors_count]
         mapping = {w: c for w, c in opts}
         words = list(mapping.keys())
         colors = list(mapping.values())
+
         full = self.trials // len(colors)
         rem = self.trials % len(colors)
         clist = colors * full + random.sample(colors, rem)
         while any(clist[i] == clist[i+1] for i in range(len(clist)-1)):
             random.shuffle(clist)
+
         half = self.trials // 2
         congruent_flags = [True]*half + [False]*(self.trials-half)
         random.shuffle(congruent_flags)
+
         self.sequence = []
         prev_word = None
         inv = {v: k for k, v in mapping.items()}
@@ -201,6 +217,7 @@ class Page5Widget(QWidget):
                 w = random.choice(cands)
             self.sequence.append((w, col))
             prev_word = w
+
         self.current_index = 0
         self.btn_left.show(); self.btn_right.show(); self.hint_label.show(); self.stim_label.show()
         self.show_stimulus()
@@ -209,9 +226,14 @@ class Page5Widget(QWidget):
         self.hint_label.clear()
         self.btn_left.setChecked(False); self.btn_left.setEnabled(True)
         self.btn_right.setChecked(False); self.btn_right.setEnabled(True)
+
+        # 新 trial 开始，标记为“尚未作答”
+        self.responded = False
+
         if self.current_index >= len(self.sequence):
             self.end_loop()
             return
+
         w, c = self.sequence[self.current_index]
         self.stim_label.setText(w)
         self.stim_label.setStyleSheet(f"background-color:lightgray;color:{c};")
@@ -219,23 +241,44 @@ class Page5Widget(QWidget):
         QtCore.QTimer.singleShot(int(self.delay*1000), self.next_stimulus)
 
     def record_response(self, user_cong: bool):
+        if self.responded:
+            return  # 避免重复记分
+
         w, c = self.sequence[self.current_index]
-        correct = ((w=="红" and c=="red") or (w=="黄" and c=="yellow") or
-                   (w=="蓝" and c=="blue") or (w=="绿" and c=="green") or
-                   (w=="黑" and c=="black") or (w=="白" and c=="white"))
-        self.results_per_loop[self.current_loop-1].append(user_cong==correct)
+        # 该刺激“字意与颜色是否一致”
+        is_congruent = ((w=="红" and c=="red") or (w=="黄" and c=="yellow") or
+                        (w=="蓝" and c=="blue") or (w=="绿" and c=="green") or
+                        (w=="黑" and c=="black") or (w=="白" and c=="white"))
+        is_correct = (user_cong == is_congruent)
+
+        # 记录正确与否（布尔）
+        self.results_per_loop[self.current_loop-1].append(is_correct)
+        # 明细：有作答 => T/F
+        label_tf = 'T' if is_correct else 'F'
+        self.details_per_loop[self.current_loop-1].append((w, c, label_tf))
+
         # 更新按钮样式
         self.btn_left.setEnabled(False); self.btn_right.setEnabled(False)
         if user_cong: self.btn_left.setChecked(True)
         else:         self.btn_right.setChecked(True)
-        # 显示提示并强制刷新
-        mark = "✔" if user_cong==correct else "❌"
-        color = "green" if user_cong==correct else "red"
+
+        # 提示
+        mark = "✔" if is_correct else "❌"
+        color = "green" if is_correct else "red"
         self.hint_label.setText(mark)
         self.hint_label.setStyleSheet(f"color:{color};border:none;")
         QApplication.processEvents()
 
+        # 标记已作答
+        self.responded = True
+
     def next_stimulus(self):
+        # 如未作答，补一条“未响应”记录：结果按错误计入，但日志标记为 N
+        if not self.responded and self.current_index < len(self.sequence):
+            w, c = self.sequence[self.current_index]
+            self.results_per_loop[self.current_loop-1].append(False)        # 计为错误
+            self.details_per_loop[self.current_loop-1].append((w, c, 'N'))  # 明细标 N
+
         self.current_index += 1
         self.show_stimulus()
 
@@ -280,8 +323,15 @@ class Page5Widget(QWidget):
             for i in range(self.loops):
                 start = self.initial_countdown + i*(self.trials*self.delay + self.rest_duration)
                 end = start + self.trials*self.delay
-                acc = sum(self.results_per_loop[i]) / self.trials
-                f.write(f"{start:.4f},{end:.4f},stroop,{acc:.2f}\n")
+                # 准确率：分母仍为 Trials，未作答视为错误
+                acc = (sum(self.results_per_loop[i]) / self.trials) if self.trials else 0.0
+                # 明细
+                seq_items = []
+                for (w, c, tag) in self.details_per_loop[i]:
+                    c_cn = COLOR_NAME_MAP.get(c, c)
+                    seq_items.append(f"字‘{w}’颜色‘{c_cn}’{tag}")
+                seq_str = "|".join(seq_items)
+                f.write(f"{start:.4f},{end:.4f},stroop,{acc:.2f},{seq_str}\n")
 
     def reset_ui(self):
         self.current_loop = 0; self.current_index = 0
