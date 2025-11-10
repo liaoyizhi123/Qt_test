@@ -7,5 +7,6 @@ requires-python = ">=3.12"
 dependencies = [
     "pyqt6>=6.9.1",
     "pyqtgraph>=0.13.7",
+    "pyttsx3>=2.99",
     "qtgui>=0.0.1",
 ]

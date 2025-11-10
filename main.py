@@ -17,6 +17,7 @@ from page5 import Page5Widget
 from page6 import Page6Widget
 from page7 import Page7Widget
 from page8 import Page8Widget
+from page9 import Page9Widget
 
 
 class Ui_MainWindow(QMainWindow):
@@ -260,6 +261,18 @@ class Ui_MainWindow(QMainWindow):
         self.btn_lef_mi_upper.setIconSize(QtCore.QSize(32, 32))
         self.btn_lef_mi_upper.setObjectName("btn_lef_mi_upper")
         self.verticalLayout_8.addWidget(self.btn_lef_mi_upper)
+        # 左侧睁眼/闭眼按钮
+        self.btn_lef_eye = QtWidgets.QPushButton(parent=self.left_center)
+        self.btn_lef_eye.setMinimumSize(QtCore.QSize(0, 50))
+        self.btn_lef_eye.setMaximumSize(QtCore.QSize(16777215, 50))
+        self.btn_lef_eye.setText("")
+        icon9 = QtGui.QIcon()
+        icon9.addPixmap(QtGui.QPixmap("resources/icons/book.png"), QtGui.QIcon.Mode.Normal, QtGui.QIcon.State.Off)
+        self.btn_lef_eye.setIcon(icon9)
+        self.btn_lef_eye.setIconSize(QtCore.QSize(32, 32))
+        self.btn_lef_eye.setObjectName("btn_lef_eye")
+        self.verticalLayout_8.addWidget(self.btn_lef_eye)
+        # FIXME.
 
         # 左侧底部的按钮
         self.verticalLayout.addWidget(self.left_center, 0, QtCore.Qt.AlignmentFlag.AlignTop)
@@ -323,6 +336,11 @@ class Ui_MainWindow(QMainWindow):
         self.page_8.setObjectName("page_8")
         self.stackedWidget.addWidget(self.page_8)
 
+        self.page_9 = Page9Widget(self.stackedWidget)
+        self.page_9.setObjectName("page_9")
+        self.stackedWidget.addWidget(self.page_9)
+        # FIXME.
+
         self.verticalLayout_9.addWidget(self.stackedWidget)
         self.horizontalLayout_2.addWidget(self.main_content)
         self.verticalLayout_2.addWidget(self.content_box)
@@ -342,6 +360,7 @@ class Ui_MainWindow(QMainWindow):
             self.btn_lef_ma,
             self.btn_lef_mi_lower,
             self.btn_lef_mi_upper,
+            self.btn_lef_eye,  # FIXME.
             self.stackedWidget,
         )
 
@@ -377,6 +396,7 @@ class Ui_MainWindow(QMainWindow):
         btn_lef_ma,
         btn_lef_mi_lower,
         btn_lef_mi_upper,
+        btn_lef_eye,  # FIXME.
         stackedWidget,
     ):
         btn_lef_home.clicked.connect(lambda: self.change_btn_page(0, stackedWidget))
@@ -387,6 +407,7 @@ class Ui_MainWindow(QMainWindow):
         btn_lef_ma.clicked.connect(lambda: self.change_btn_page(5, stackedWidget))
         btn_lef_mi_lower.clicked.connect(lambda: self.change_btn_page(6, stackedWidget))
         btn_lef_mi_upper.clicked.connect(lambda: self.change_btn_page(7, stackedWidget))
+        btn_lef_eye.clicked.connect(lambda: self.change_btn_page(8, stackedWidget))  # FIXME.
         stackedWidget.setCurrentIndex(0)
 
     def change_btn_page(self, current_index, stackedWidget):
@@ -441,6 +462,7 @@ class Ui_MainWindow(QMainWindow):
         self.btn_lef_ma.setStyleSheet(default_style)
         self.btn_lef_mi_lower.setStyleSheet(default_style)
         self.btn_lef_mi_upper.setStyleSheet(default_style)
+        self.btn_lef_eye.setStyleSheet(default_style)  # FIXME.
 
         # 根据当前页面索引设置相应按钮的高亮颜色
         if current_index == 0:
@@ -467,6 +489,9 @@ class Ui_MainWindow(QMainWindow):
         elif current_index == 7:
             self.btn_lef_mi_upper.setStyleSheet(selected_style)
             self.proj_title.setText("Motor Imagery(Upper Limb), 按下【开始实验】，同时开始记录脑电信号")
+        elif current_index == 8:
+            self.btn_lef_eye.setStyleSheet(selected_style)  # FIXME.
+            self.proj_title.setText("睁眼/闭眼实验, 按下【开始实验】，同时开始记录脑电信号")
 
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate

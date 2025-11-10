@@ -19,7 +19,7 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QKeySequence, QShortcut
 
 
-class Page7Widget(QWidget):  # 这里没有run的概念
+class Page7Widget(QWidget):  # 这里没有run的概念·``
     """
     EEG 实验范式单页组件（4 条 Task：慢走、慢跑、快跑、静止）。
     - 启动/结束倒计时：无背景，仅文字。
