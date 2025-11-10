@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtGui import QShortcut, QKeySequence
 
-# 尝试导入 Qt 自带的跨平台语音模块（macOS / Windows 兼容）
+# Qt 跨平台语音
 try:
     from PyQt6.QtTextToSpeech import QTextToSpeech
 except ImportError:
@@ -63,7 +63,7 @@ class Page9Widget(QWidget):
         self.end_countdown = 10      # 实验结束倒计时（秒）
         self.open_duration = 10      # 睁眼激活期默认时长
         self.close_duration = 10     # 闭眼激活期默认时长
-        self.default_cycles = 5      # 每循环包含：睁眼 + 闭眼
+        self.default_cycles = 5      # 每循环：睁眼 + 闭眼
 
         # 条件标签
         self.condition_open = "eye_open"
@@ -84,18 +84,9 @@ class Page9Widget(QWidget):
 
         self._countdown_timer = None
 
-        # ------------ 语音引擎 ------------
+        # ------------ 语音引擎配置 ------------
         self.tts = None
-        if QTextToSpeech is not None:
-            try:
-                self.tts = QTextToSpeech(self)
-                # 优先选中文语音（如果有）
-                voices = self.tts.availableVoices()
-                zh_voices = [v for v in voices if "zh" in v.locale().name().lower()]
-                if zh_voices:
-                    self.tts.setVoice(zh_voices[0])
-            except Exception:
-                self.tts = None  # 安全降级：没有 TTS 就静默
+        self._init_tts()
 
         # ------------ UI ------------
         root = QVBoxLayout(self)
@@ -168,6 +159,53 @@ class Page9Widget(QWidget):
         self.esc_shortcut = QShortcut(QKeySequence(QtCore.Qt.Key.Key_Escape), self)
         self.esc_shortcut.setContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
         self.esc_shortcut.activated.connect(self.abort_and_finalize)
+
+    # ------------ TTS 初始化 ------------
+
+    def _init_tts(self):
+        """根据平台初始化 QTextToSpeech，在 Windows 上优先使用 sapi 引擎。"""
+        if QTextToSpeech is None:
+            self.tts = None
+            return
+
+        engines = QTextToSpeech.availableEngines()
+        platform = sys.platform.lower()
+
+        try:
+            if platform.startswith("win"):
+                # Windows 上显式使用 sapi 引擎（和你测试代码保持一致）
+                if "sapi" in engines:
+                    self.tts = QTextToSpeech("sapi", self)
+                else:
+                    # 退一步：如果没有显式 sapi，就用默认引擎
+                    self.tts = QTextToSpeech(self)
+            else:
+                # macOS / Linux 用默认引擎
+                self.tts = QTextToSpeech(self)
+        except Exception:
+            self.tts = None
+            return
+
+        if self.tts is None:
+            return
+
+        # 选声音：优先中文 / zh / mandarin
+        try:
+            voices = self.tts.availableVoices()
+            zh_idx = -1
+            for i, v in enumerate(voices):
+                loc = v.locale().name().lower()
+                name = (v.name() or "").lower()
+                if "zh" in loc or "chinese" in name or "mandarin" in name:
+                    zh_idx = i
+                    break
+            if zh_idx >= 0:
+                self.tts.setVoice(voices[zh_idx])
+            elif voices:
+                self.tts.setVoice(voices[0])
+            self.tts.setVolume(1.0)
+        except Exception:
+            pass
 
     # ------------ 开始入口 ------------
 
@@ -243,7 +281,7 @@ class Page9Widget(QWidget):
 
         self._speak(text)
 
-        # 3 秒前置提示（此时不立刻加到 logical_ms，等 3s 结束统一加）
+        # 3 秒前置提示（结束后再把这 3 秒加进 logical_ms）
         self._show_fullscreen_message(
             text,
             3,
@@ -391,12 +429,20 @@ class Page9Widget(QWidget):
         self.countdown_label.setStyleSheet("")
 
     def _speak(self, text: str):
-        """跨平台语音：优先 QTextToSpeech，没有则静默。"""
-        if self.tts is not None:
-            try:
-                self.tts.say(text)
-            except Exception:
-                pass
+        """
+        使用 QTextToSpeech 播报。
+        不阻塞时序逻辑（Qt 内部异步播放），
+        日志的时间线只由我们手动累加控制。
+        """
+        if self.tts is None:
+            return
+        try:
+            # 每次说话前保证音量有效
+            self.tts.setVolume(1.0)
+            self.tts.say(text)
+        except Exception:
+            # 播放失败直接静默，不影响实验流程
+            pass
 
     # ------------ 结束 & 中断 ------------
 
@@ -439,7 +485,7 @@ class Page9Widget(QWidget):
         self.stage_label.hide()
         self.countdown_label.hide()
 
-        # 恢复配置
+        # 恢复配置区
         self.name_input.clear()
         self.instruction.show()
         self.start_btn.show()
