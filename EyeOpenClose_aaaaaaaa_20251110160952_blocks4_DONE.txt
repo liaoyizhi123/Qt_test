@@ -1,4 +1,0 @@
-15.000,24.000,eye_closed,duration=9
-24.000,33.000,eye_open,duration=9
-51.000,60.000,eye_closed,duration=9
-60.000,69.000,eye_open,duration=9
