@@ -60,10 +60,10 @@ class Page9Widget(QWidget):
 
         # ------------ 默认参数 ------------
         self.initial_countdown = 10  # 实验前倒计时（秒）
-        self.end_countdown = 10  # 实验结束倒计时（秒）
-        self.open_duration = 10  # 睁眼激活期默认时长
-        self.close_duration = 10  # 闭眼激活期默认时长
-        self.default_cycles = 5  # 每循环包含：睁眼 + 闭眼
+        self.end_countdown = 10      # 实验结束倒计时（秒）
+        self.open_duration = 10      # 睁眼激活期默认时长
+        self.close_duration = 10     # 闭眼激活期默认时长
+        self.default_cycles = 5      # 每循环包含：睁眼 + 闭眼
 
         # 条件标签
         self.condition_open = "eye_open"
@@ -72,17 +72,30 @@ class Page9Widget(QWidget):
         # ------------ 状态变量 ------------
         self.name = ""
         self.cycles = self.default_cycles
-        self.block_plan = []  # ["睁眼","闭眼", "睁眼","闭眼", ...]
+        self.block_plan = []          # ["eye_open","eye_closed", ...]
         self.block_index = -1
         self.current_condition = None
 
-        self.logical_ms = 0  # 逻辑时间（毫秒），Start=0
-        self.trial_logs = []  # 每个激活期记录
+        # 逻辑时间（毫秒），Start 按下时刻 = 0
+        self.logical_ms = 0
+
+        # 每个激活期记录：{condition, start_ms, end_ms, duration}
+        self.trial_logs = []
 
         self._countdown_timer = None
 
-        # 语音引擎
-        self.tts = QTextToSpeech(self) if QTextToSpeech is not None else None
+        # ------------ 语音引擎 ------------
+        self.tts = None
+        if QTextToSpeech is not None:
+            try:
+                self.tts = QTextToSpeech(self)
+                # 优先选中文语音（如果有）
+                voices = self.tts.availableVoices()
+                zh_voices = [v for v in voices if "zh" in v.locale().name().lower()]
+                if zh_voices:
+                    self.tts.setVoice(zh_voices[0])
+            except Exception:
+                self.tts = None  # 安全降级：没有 TTS 就静默
 
         # ------------ UI ------------
         root = QVBoxLayout(self)
@@ -92,7 +105,7 @@ class Page9Widget(QWidget):
         self.instruction = QLabel(
             "填写信息后点击开始。\n"
             "本实验交替采集【睁眼】与【闭眼】状态下的EEG信号。\n"
-            "按下 Start 即视为时间零点，请同步启动 EEG 记录。"
+            "按下 Start 即视为时间零点，请同时启动 EEG 记录。"
         )
         f = self.instruction.font()
         f.setPointSize(13)
@@ -124,8 +137,6 @@ class Page9Widget(QWidget):
         self.close_spin.setRange(1, 600)
         self.close_spin.setValue(self.close_duration)
         form.addRow("闭眼激活期时长 (秒):", self.close_spin)
-
-        
 
         root.addWidget(settings)
         self.settings_widget = settings
@@ -194,7 +205,7 @@ class Page9Widget(QWidget):
         self.start_btn.hide()
         self.settings_widget.hide()
 
-        # 初始 10 秒倒计时（时间从此开始计）
+        # 初始 10 秒倒计时（从此刻开始计时 = t0）
         self._show_fullscreen_message(
             "{n}秒后将开始实验",
             self.initial_countdown,
@@ -203,9 +214,9 @@ class Page9Widget(QWidget):
         )
 
     def _after_initial_countdown(self):
-        # 完成初始倒计时，逻辑时间前进
+        # 完成初始倒计时，逻辑时间前进 10s
         self.logical_ms += self.initial_countdown * 1000
-        # 进入第一个区块之前的语音提示
+        # 进入第一个区块前的 3s 语音提示
         self._start_next_block_pre_voice()
 
     # ------------ Block 流程 ------------
@@ -232,7 +243,7 @@ class Page9Widget(QWidget):
 
         self._speak(text)
 
-        # 3 秒前置提示
+        # 3 秒前置提示（此时不立刻加到 logical_ms，等 3s 结束统一加）
         self._show_fullscreen_message(
             text,
             3,
@@ -266,25 +277,25 @@ class Page9Widget(QWidget):
             }
         )
 
-        # 显示采集中文案
+        # 显示采集中提示
         self._apply_bg("#ffffff")
         self._apply_fg("#000000")
         self.stage_label.setText(label)
         self.stage_label.show()
         self.countdown_label.hide()
 
-        # 激活期结束后进入 _activation_done
+        # 激活期结束后回调
         QtCore.QTimer.singleShot(int(dur * 1000), self._activation_done)
 
     def _activation_done(self):
-        # 激活期结束，对齐逻辑时间
+        # 激活期结束，对齐逻辑时间到 end_ms
         last = self.trial_logs[-1]
         self.logical_ms = last["end_ms"]
 
         done_text = "采集完成"
         self._speak(done_text)
 
-        # 3 秒“采集完成”提示
+        # 3 秒“采集完成”提示（结束后再推进 logical_ms）
         self._show_fullscreen_message(
             done_text,
             3,
@@ -295,7 +306,7 @@ class Page9Widget(QWidget):
         )
 
     def _after_post_voice(self):
-        # 完成提示 3s 结束，推进时间
+        # 完成“采集完成”3s 提示，推进时间
         self.logical_ms += 3 * 1000
         # 进入下一个 block
         self._start_next_block_pre_voice()
@@ -315,7 +326,7 @@ class Page9Widget(QWidget):
         显示全屏文本+可选倒计时。
         - template_or_text: 可包含 {n}，会替换为剩余秒数。
         - seconds: 总秒数。
-        - plain=True: 清除背景样式（用于黑屏+文字）。
+        - plain=True: 清除背景样式（用于黑屏+文字或默认背景）。
         """
         if plain:
             self._clear_styles()
@@ -382,12 +393,15 @@ class Page9Widget(QWidget):
     def _speak(self, text: str):
         """跨平台语音：优先 QTextToSpeech，没有则静默。"""
         if self.tts is not None:
-            self.tts.say(text)
+            try:
+                self.tts.say(text)
+            except Exception:
+                pass
 
     # ------------ 结束 & 中断 ------------
 
     def _finish_and_save(self):
-        # 结束倒计时也计入逻辑时间（如需）
+        # 结束倒计时结束时逻辑时间再推进 end_countdown 秒
         self.logical_ms += self.end_countdown * 1000
         self._save_report()
         self._reset_ui()
