@@ -1,12 +1,18 @@
-# page5.py
-
 import sys
 import random
 from datetime import datetime
 from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtWidgets import (
-    QApplication, QWidget, QVBoxLayout, QFormLayout, QLabel,
-    QLineEdit, QSpinBox, QDoubleSpinBox, QPushButton, QMessageBox
+    QApplication,
+    QWidget,
+    QVBoxLayout,
+    QFormLayout,
+    QLabel,
+    QLineEdit,
+    QSpinBox,
+    QDoubleSpinBox,
+    QPushButton,
+    QMessageBox,
 )
 
 # 中文颜色与对应英文色值
@@ -29,36 +35,47 @@ COLOR_NAME_MAP = {
     "white": "白",
 }
 
+
 class Page5Widget(QWidget):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Stroop 实验")
 
+        # 可以按需要改，比如全屏时保持中间 600 宽
+        self.setMinimumSize(800, 600)
+
         # 默认参数
         self.name = ""
         self.loops = 6
         self.trials = 10
-        self.delay = 2.0
+        self.delay = 2.0  # 展示期时长（秒）
         self.colors_count = 6
         self.initial_countdown = 10
         self.rest_duration = 10
+        self.separate_phases = False  # 是否分离展示与作答
+        self.response_window = 2.0    # 分离模式下作答窗口（秒）
+
         # 实验状态
         self.current_loop = 0
         self.current_index = 0
         self.sequence = []
-        self.results_per_loop = []   # 存布尔：是否答对
-        self.details_per_loop = []   # 存日志明细：(word_cn, color_en, 'T'/'F'/'N')
-        self.responded = False       # 本 trial 是否已作答
+        self.results_per_loop = []  # 存布尔：是否答对
+        self.details_per_loop = []  # 存日志明细：(word_cn, color_en, 'T'/'F'/'N')
+        self.responded = False      # 本 trial 是否已作答
 
-        # 主布局
-        layout = QVBoxLayout(self)
+        # ===== 外层布局：只负责把 main_container 居中 =====
+        root_layout = QVBoxLayout(self)
+        root_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
+        # 中间固定宽度容器：所有实验元素都放这里，宽度不变
+        self.main_container = QWidget()
+        self.main_container.setFixedWidth(600)
+        layout = QVBoxLayout(self.main_container)
         layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        root_layout.addWidget(self.main_container, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
 
         # 操作提示标签
-        self.instruction_label = QLabel(
-            "按方向键左键表示【字意】与【颜色】一致，"
-            "右键表示不一致。"
-        )
+        self.instruction_label = QLabel("按方向键左键表示【字意】与【颜色】一致，右键表示不一致。")
         instr_font = self.instruction_label.font()
         instr_font.setPointSize(14)
         self.instruction_label.setFont(instr_font)
@@ -86,19 +103,26 @@ class Page5Widget(QWidget):
         self.trials_spin.setValue(self.trials)
         form.addRow("Trials:", self.trials_spin)
 
+        # delay：原始模式=总时长；分离模式=展示期时长
         self.delay_spin = QDoubleSpinBox()
         self.delay_spin.setRange(0.1, 10.0)
         self.delay_spin.setSingleStep(0.1)
         self.delay_spin.setValue(self.delay)
-        form.addRow("Delay (s):", self.delay_spin)
+        form.addRow("展示期 Delay (s):", self.delay_spin)
 
         self.colors_spin = QSpinBox()
         self.colors_spin.setRange(2, len(COLOR_OPTIONS))
         self.colors_spin.setValue(self.colors_count)
         form.addRow("Colors (max 6):", self.colors_spin)
 
+        # 是否分离展示与操作
+        self.split_checkbox = QtWidgets.QCheckBox("是（先展示，后作答）")
+        self.split_checkbox.setChecked(False)  # 默认“否”
+        form.addRow("展示/操作分离:", self.split_checkbox)
+
         self.start_btn = QPushButton("Start Stroop")
         self.start_btn.clicked.connect(self.start_experiment)
+
         layout.addWidget(settings)
         layout.addWidget(self.start_btn, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
 
@@ -119,16 +143,28 @@ class Page5Widget(QWidget):
         self.stim_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.stim_label.setStyleSheet("background-color: lightgray;")
         self.stim_label.hide()
+        # 固定宽度让单字符居中更稳定（可按实际调整）
+        self.stim_label.setFixedWidth(400)
         layout.addWidget(self.stim_label)
 
-        # 左右按钮
-        btn_layout = QtWidgets.QHBoxLayout()
-        self.btn_left = QPushButton("←")
-        self.btn_right = QPushButton("→")
+        # 按钮容器：固定高度 + 固定宽度，位置不变
+        self.btn_container = QWidget()
+        self.btn_container.setFixedHeight(80)
+        self.btn_container.setFixedWidth(400)
+        btn_layout = QVBoxLayout(self.btn_container)
+        btn_layout.setContentsMargins(0, 0, 0, 0)
+        btn_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+
+        inner_row = QtWidgets.QHBoxLayout()
+        inner_row.setContentsMargins(0, 0, 0, 0)
+        inner_row.setSpacing(40)
+
+        self.btn_left = QPushButton("← 一致")
+        self.btn_right = QPushButton("→ 不一致")
         for btn in (self.btn_left, self.btn_right):
             btn.setCheckable(True)
-            btn.setFixedSize(100, 50)
-            btn.hide()
+            btn.setFixedSize(120, 50)
+
         style = (
             "QPushButton{background-color:#4caf50;color:white;font-size:18px;}"
             "QPushButton:checked{background-color:#388e3c;}"
@@ -137,13 +173,18 @@ class Page5Widget(QWidget):
         )
         self.btn_left.setStyleSheet(style)
         self.btn_right.setStyleSheet(style)
+
         self.btn_left.clicked.connect(lambda: self.record_response(True))
         self.btn_right.clicked.connect(lambda: self.record_response(False))
-        btn_layout.addWidget(self.btn_left)
-        btn_layout.addWidget(self.btn_right)
-        layout.addLayout(btn_layout)
 
-        # 提示标签 (固定高度)
+        inner_row.addWidget(self.btn_left)
+        inner_row.addWidget(self.btn_right)
+        btn_layout.addLayout(inner_row)
+
+        self.btn_container.hide()  # 实验开始前不显示按钮区
+        layout.addWidget(self.btn_container, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
+
+        # 提示标签 (固定高度 + 固定宽度)
         self.hint_label = QLabel("")
         font_hint = self.hint_label.font()
         font_hint.setPointSize(16)
@@ -151,30 +192,36 @@ class Page5Widget(QWidget):
         self.hint_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.hint_label.setStyleSheet("border:none;")
         self.hint_label.setFixedHeight(40)
+        self.hint_label.setFixedWidth(400)
         self.hint_label.hide()
         layout.addWidget(self.hint_label)
 
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
+
+    # ---------------- 核心流程 ----------------
 
     def start_experiment(self):
         name = self.name_input.text().strip()
         if not name:
             QMessageBox.warning(self, "错误", "请输入姓名！")
             return
+
         self.name = name
         self.loops = self.loops_spin.value()
         self.trials = self.trials_spin.value()
         self.delay = self.delay_spin.value()
         self.colors_count = self.colors_spin.value()
+        self.separate_phases = self.split_checkbox.isChecked()
 
-        # 初始化
         self.current_loop = 1
         self.results_per_loop = [[] for _ in range(self.loops)]
         self.details_per_loop = [[] for _ in range(self.loops)]
 
-        # 进入初始倒计时
+        # 隐藏设置区
         self.name_input.parent().hide()
         self.start_btn.hide()
+
+        # 初始倒计时
         self.countdown_secs = self.initial_countdown
         self.countdown_label.setText(f"{self.countdown_secs}秒后将开始实验")
         self.countdown_label.show()
@@ -190,8 +237,8 @@ class Page5Widget(QWidget):
             self.start_loop()
 
     def start_loop(self):
-        # 生成序列：颜色均匀 + 相邻颜色不重复；一半congruent一半incongruent
-        opts = COLOR_OPTIONS[:self.colors_count]
+        # 生成序列：颜色均匀 + 相邻颜色不重复；一半 congruent 一半 incongruent
+        opts = COLOR_OPTIONS[: self.colors_count]
         mapping = {w: c for w, c in opts}
         words = list(mapping.keys())
         colors = list(mapping.values())
@@ -199,11 +246,11 @@ class Page5Widget(QWidget):
         full = self.trials // len(colors)
         rem = self.trials % len(colors)
         clist = colors * full + random.sample(colors, rem)
-        while any(clist[i] == clist[i+1] for i in range(len(clist)-1)):
+        while any(clist[i] == clist[i + 1] for i in range(len(clist) - 1)):
             random.shuffle(clist)
 
         half = self.trials // 2
-        congruent_flags = [True]*half + [False]*(self.trials-half)
+        congruent_flags = [True] * half + [False] * (self.trials - half)
         random.shuffle(congruent_flags)
 
         self.sequence = []
@@ -219,72 +266,124 @@ class Page5Widget(QWidget):
             prev_word = w
 
         self.current_index = 0
-        self.btn_left.show(); self.btn_right.show(); self.hint_label.show(); self.stim_label.show()
+        self.btn_container.show()   # 从本轮开始预留按钮区域（空/有按钮都不变形）
+        self.hint_label.show()
         self.show_stimulus()
 
     def show_stimulus(self):
-        self.hint_label.clear()
-        self.btn_left.setChecked(False); self.btn_left.setEnabled(True)
-        self.btn_right.setChecked(False); self.btn_right.setEnabled(True)
-
-        # 新 trial 开始，标记为“尚未作答”
-        self.responded = False
-
         if self.current_index >= len(self.sequence):
             self.end_loop()
             return
 
+        self.hint_label.clear()
+        self.btn_left.setChecked(False)
+        self.btn_right.setChecked(False)
+        self.responded = False
+
         w, c = self.sequence[self.current_index]
         self.stim_label.setText(w)
         self.stim_label.setStyleSheet(f"background-color:lightgray;color:{c};")
-        self.stim_label.show(); self.activateWindow(); self.setFocus()
-        QtCore.QTimer.singleShot(int(self.delay*1000), self.next_stimulus)
+        self.stim_label.show()
+        self.activateWindow()
+        self.setFocus()
+
+        if self.separate_phases:
+            # 展示期：仅刺激 & 提示，按钮隐藏，但按钮容器存在，宽高固定
+            self.btn_left.hide()
+            self.btn_right.hide()
+            self.hint_label.setText("请注视刺激")
+            self.hint_label.setStyleSheet("color:black;border:none;")
+            QtCore.QTimer.singleShot(int(self.delay * 1000), self.start_response_phase)
+        else:
+            # 原始模式：展示+作答合一
+            self.btn_left.show()
+            self.btn_right.show()
+            self.btn_left.setEnabled(True)
+            self.btn_right.setEnabled(True)
+            self.hint_label.setText("")
+            self.hint_label.setStyleSheet("border:none;")
+            QtCore.QTimer.singleShot(int(self.delay * 1000), self.next_stimulus)
+
+    def start_response_phase(self):
+        if self.current_index >= len(self.sequence):
+            return
+
+        # 展示结束，进入作答期：按钮出现
+        self.btn_left.show()
+        self.btn_right.show()
+        self.btn_left.setEnabled(True)
+        self.btn_right.setEnabled(True)
+        self.hint_label.setText("现在判断：← 一致，→ 不一致")
+        self.hint_label.setStyleSheet("color:black;border:none;")
+
+        QtCore.QTimer.singleShot(int(self.response_window * 1000), self.finish_trial)
+
+    def finish_trial(self):
+        if self.current_index >= len(self.sequence):
+            return
+
+        if not self.responded:
+            w, c = self.sequence[self.current_index]
+            self.results_per_loop[self.current_loop - 1].append(False)
+            self.details_per_loop[self.current_loop - 1].append((w, c, 'N'))
+
+        self.current_index += 1
+        self.show_stimulus()
 
     def record_response(self, user_cong: bool):
-        if self.responded:
-            return  # 避免重复记分
+        if self.responded or self.current_index >= len(self.sequence):
+            return
 
         w, c = self.sequence[self.current_index]
-        # 该刺激“字意与颜色是否一致”
-        is_congruent = ((w=="红" and c=="red") or (w=="黄" and c=="yellow") or
-                        (w=="蓝" and c=="blue") or (w=="绿" and c=="green") or
-                        (w=="黑" and c=="black") or (w=="白" and c=="white"))
+        is_congruent = (
+            (w == "红" and c == "red")
+            or (w == "黄" and c == "yellow")
+            or (w == "蓝" and c == "blue")
+            or (w == "绿" and c == "green")
+            or (w == "黑" and c == "black")
+            or (w == "白" and c == "white")
+        )
         is_correct = (user_cong == is_congruent)
 
-        # 记录正确与否（布尔）
-        self.results_per_loop[self.current_loop-1].append(is_correct)
-        # 明细：有作答 => T/F
+        self.results_per_loop[self.current_loop - 1].append(is_correct)
         label_tf = 'T' if is_correct else 'F'
-        self.details_per_loop[self.current_loop-1].append((w, c, label_tf))
+        self.details_per_loop[self.current_loop - 1].append((w, c, label_tf))
 
-        # 更新按钮样式
-        self.btn_left.setEnabled(False); self.btn_right.setEnabled(False)
-        if user_cong: self.btn_left.setChecked(True)
-        else:         self.btn_right.setChecked(True)
+        self.btn_left.setEnabled(False)
+        self.btn_right.setEnabled(False)
+        if user_cong:
+            self.btn_left.setChecked(True)
+        else:
+            self.btn_right.setChecked(True)
 
-        # 提示
         mark = "✔" if is_correct else "❌"
         color = "green" if is_correct else "red"
         self.hint_label.setText(mark)
         self.hint_label.setStyleSheet(f"color:{color};border:none;")
         QApplication.processEvents()
 
-        # 标记已作答
         self.responded = True
 
     def next_stimulus(self):
-        # 如未作答，补一条“未响应”记录：结果按错误计入，但日志标记为 N
+        # 原始模式：delay 结束切下一 trial，未作答记 N
+        if self.separate_phases:
+            return
+
         if not self.responded and self.current_index < len(self.sequence):
             w, c = self.sequence[self.current_index]
-            self.results_per_loop[self.current_loop-1].append(False)        # 计为错误
-            self.details_per_loop[self.current_loop-1].append((w, c, 'N'))  # 明细标 N
+            self.results_per_loop[self.current_loop - 1].append(False)
+            self.details_per_loop[self.current_loop - 1].append((w, c, 'N'))
 
         self.current_index += 1
         self.show_stimulus()
 
     def end_loop(self):
-        self.stim_label.hide(); self.btn_left.hide(); self.btn_right.hide(); self.hint_label.hide()
-        # 最后一轮结束倒计时
+        self.stim_label.hide()
+        self.btn_left.hide()
+        self.btn_right.hide()
+        self.btn_container.hide()
+        self.hint_label.hide()
+
         if self.current_loop == self.loops:
             self.countdown_secs = self.initial_countdown
             self.countdown_label.setText(f"实验将于{self.countdown_secs}秒后结束")
@@ -310,6 +409,7 @@ class Page5Widget(QWidget):
         self.countdown_secs -= 1
         if self.countdown_secs > 0:
             self.countdown_label.setText(f"实验将于{self.countdown_secs}秒后结束")
+            self.countdown_label.show()
             QtCore.QTimer.singleShot(1000, self.update_end_countdown)
         else:
             self.countdown_label.hide()
@@ -318,30 +418,60 @@ class Page5Widget(QWidget):
 
     def save_report(self):
         nowstr = datetime.now().strftime('%Y%m%d%H%M%S')
-        fname = f"Stroop_{self.name}_{nowstr}_loops{self.loops}_trials{self.trials}_delay{self.delay}.txt"
-        with open(fname, 'w', encoding='utf-8') as f:
+        mode = "split" if self.separate_phases else "normal"
+        fname = (
+            f"Stroop_{self.name}_{nowstr}_"
+            f"loops{self.loops}_trials{self.trials}_delay{self.delay}_{mode}.txt"
+        )
+
+        trial_total = self.delay + (self.response_window if self.separate_phases else 0.0)
+
+        with open(fname, "w", encoding="utf-8") as f:
+            current_start = self.initial_countdown
             for i in range(self.loops):
-                start = self.initial_countdown + i*(self.trials*self.delay + self.rest_duration)
-                end = start + self.trials*self.delay
-                # 准确率：分母仍为 Trials，未作答视为错误
+                start = current_start
+                end = start + self.trials * trial_total
                 acc = (sum(self.results_per_loop[i]) / self.trials) if self.trials else 0.0
-                # 明细
+
                 seq_items = []
-                for (w, c, tag) in self.details_per_loop[i]:
+                for w, c, tag in self.details_per_loop[i]:
                     c_cn = COLOR_NAME_MAP.get(c, c)
                     seq_items.append(f"字‘{w}’颜色‘{c_cn}’{tag}")
                 seq_str = "|".join(seq_items)
                 f.write(f"{start:.4f},{end:.4f},stroop,{acc:.2f},{seq_str}\n")
 
+                if i < self.loops - 1:
+                    current_start = end + self.rest_duration
+
     def reset_ui(self):
-        self.current_loop = 0; self.current_index = 0
-        self.name_input.parent().show(); self.start_btn.show()
+        self.current_loop = 0
+        self.current_index = 0
+        self.sequence = []
+        self.results_per_loop = []
+        self.details_per_loop = []
+
+        self.stim_label.hide()
+        self.btn_left.hide()
+        self.btn_right.hide()
+        self.btn_container.hide()
+        self.hint_label.hide()
+        self.countdown_label.hide()
+
+        self.name_input.parent().show()
+        self.start_btn.show()
 
     def keyPressEvent(self, event):
-        if event.key() in (QtCore.Qt.Key.Key_Left, QtCore.Qt.Key.Key_Right) and self.btn_left.isVisible():
-            if event.key()==QtCore.Qt.Key.Key_Left and self.btn_left.isEnabled(): self.record_response(True)
-            if event.key()==QtCore.Qt.Key.Key_Right and self.btn_right.isEnabled(): self.record_response(False)
+        if (
+            event.key() in (QtCore.Qt.Key.Key_Left, QtCore.Qt.Key.Key_Right)
+            and self.btn_left.isVisible()
+            and self.btn_left.isEnabled()
+        ):
+            if event.key() == QtCore.Qt.Key.Key_Left:
+                self.record_response(True)
+            elif event.key() == QtCore.Qt.Key.Key_Right:
+                self.record_response(False)
         super().keyPressEvent(event)
+
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
