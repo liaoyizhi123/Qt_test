@@ -440,7 +440,7 @@ class Page10Widget(QWidget):
         # 显示动作阶段
         self._apply_bg("#ffffff")
         self._apply_fg("#000000")
-        img_path = f"resources\eog_images\{trial_type}.png"
+        img_path = rf"resources\eog_images\{trial_type}.png"
         if os.path.exists(img_path):
             pm = QPixmap(img_path).scaled(
                 600, 600,

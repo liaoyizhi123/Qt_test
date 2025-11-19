@@ -266,7 +266,7 @@ class UdpEegReceiver(QObject):
             data_length = (frame_data[6] << 8) | frame_data[7]
 
             # 时间戳（大端 uint64，单位: 微秒）
-            timestamp_offset = 38
+            timestamp_offset = 8 + 30
             if timestamp_offset + 8 > len(frame_data):
                 return None
 
@@ -375,7 +375,7 @@ class Page2Widget(QtWidgets.QWidget):
     页面2：实时显示 UDP EEG 数据（只展示，不保存）
     - 自动解析多通道
     - 显示所有活跃通道的波形（叠加在同一个图上）
-    - 利用硬件时间戳估算“最近 3 秒窗口”的采样率，只显示一次
+    - 利用硬件时间戳估算“最近 3 秒窗口”的采样率（可选）
     - 通过下拉框选择通道数（3/4），通过 checkbox 动态控制每个通道是否显示
     - 新增走纸方式：1=滚动窗口，2=扫屏重写（带竖直指示线）
     """
@@ -384,7 +384,7 @@ class Page2Widget(QtWidgets.QWidget):
         super(Page2Widget, self).__init__(parent)
 
         self.last_plot_time = 0.0
-        self.plot_interval = 1.0 / 120.0  # 最多 ~120 FPS
+        self.plot_interval = 1.0 / 30.0  # 最多 ~120 FPS
 
         # ====== 主布局 ======
         self.main_layout = QtWidgets.QVBoxLayout(self)
@@ -540,6 +540,15 @@ class Page2Widget(QtWidgets.QWidget):
         # 存储 checkbox 的字典
         self.channel_checkboxes: dict[int, QtWidgets.QCheckBox] = {}
 
+        # ===== 采样率估计控制 =====
+        self.checkbox_enable_fs_estimate = QtWidgets.QCheckBox("计算采样率")
+        # 默认不勾选
+        self.checkbox_enable_fs_estimate.setChecked(False)
+
+        # 新增：绘图降采样 checkbox（只影响画图）
+        self.checkbox_downsample_plot = QtWidgets.QCheckBox("绘图降采样1/2")
+        self.checkbox_downsample_plot.setChecked(False)
+
         # 采样率估计 Label（全局）
         self.label_fs_estimated = QtWidgets.QLabel("采样率估计：-- Hz")
         self.label_fs_estimated.setFixedWidth(160)
@@ -565,7 +574,10 @@ class Page2Widget(QtWidgets.QWidget):
         self.channel_control_layout.addWidget(self.label_show_channels)
         self.channel_control_layout.addLayout(self.channel_checkbox_layout)
         self.channel_control_layout.addSpacing(16)
+        self.channel_control_layout.addWidget(self.checkbox_enable_fs_estimate)
         self.channel_control_layout.addWidget(self.label_fs_estimated)
+        self.channel_control_layout.addSpacing(8)
+        self.channel_control_layout.addWidget(self.checkbox_downsample_plot)
         self.channel_control_layout.addSpacing(16)
         self.channel_control_layout.addLayout(scroll_mode_layout)
         self.channel_control_layout.addStretch()
@@ -575,7 +587,9 @@ class Page2Widget(QtWidgets.QWidget):
         self.on_channel_count_changed()
 
         # 走纸模式：1=当前滚动窗口，2=扫屏重写
-        self.scroll_mode = 1
+        # 默认模式改为 2（扫屏重写），并同步更新下拉框显示
+        self.scroll_mode = 2
+        self.combo_scroll_mode.setCurrentIndex(1)
         self.combo_scroll_mode.currentIndexChanged.connect(self.on_scroll_mode_changed)
 
         # ===================== layout_2: pyqtgraph 曲线 =====================
@@ -604,8 +618,8 @@ class Page2Widget(QtWidgets.QWidget):
 
         # 采样率估计（全局）：使用一个参考通道 + 最近 3 秒窗口
         self.reference_channel: Optional[int] = None     # 用来估计 fs 的通道
-        self.ref_window = deque()                       # 存放 (hw_ts, n_samples)，仅最近 ~3 秒
-        self.fs_estimated_global: float = 0.0           # 估算的实际采样率（当前 3 秒窗口）
+        self.ref_window = deque()                        # 存放 (hw_ts, n_samples)，仅最近 ~3 秒
+        self.fs_estimated_global: float = 0.0            # 估算的实际采样率（当前 3 秒窗口）
 
         self.plot_widget = pg.PlotWidget()
         self.plot_widget.setBackground("w")
@@ -759,12 +773,14 @@ class Page2Widget(QtWidgets.QWidget):
             # 只有在扫屏模式下显示
             self.sweep_line.setVisible(self.scroll_mode == 2)
 
-            # UI 状态：先禁用端口输入和通道数选择 + 走纸方式（开始后不能改）
+            # UI 状态：先禁用端口输入和通道数选择 + 走纸方式 + 采样率checkbox（开始后不能改）
             self.input_ip.setDisabled(True)
             self.input_port.setDisabled(True)
             self.input_fs.setDisabled(True)
             self.combo_channel_count.setDisabled(True)
             self.combo_scroll_mode.setDisabled(True)
+            self.checkbox_enable_fs_estimate.setDisabled(True)
+            # 注意：降采样 checkbox 不禁用，可以运行时自由切换
 
             # 如果之前有 receiver，先停掉
             if self.receiver is not None:
@@ -793,6 +809,7 @@ class Page2Widget(QtWidgets.QWidget):
                 self.input_fs.setDisabled(False)
                 self.combo_channel_count.setDisabled(False)
                 self.combo_scroll_mode.setDisabled(False)
+                self.checkbox_enable_fs_estimate.setDisabled(False)
                 if self.receiver is not None:
                     self.receiver.deleteLater()
                     self.receiver = None
@@ -819,6 +836,8 @@ class Page2Widget(QtWidgets.QWidget):
             self.input_fs.setDisabled(False)
             self.combo_channel_count.setDisabled(False)
             self.combo_scroll_mode.setDisabled(False)
+            self.checkbox_enable_fs_estimate.setDisabled(False)
+            # 降采样 checkbox 本来也没禁用，无需恢复
 
     # -------- 接收 EEG 数据并更新曲线（多通道 + 3 秒窗口采样率估计 + checkbox 控制） --------
 
@@ -829,11 +848,10 @@ class Page2Widget(QtWidgets.QWidget):
           1. 对每一个通道分别维护 x/y 数据和 sample_index
           2. 为每个通道创建独立的曲线（不同颜色）
           3. 把所有被选中的通道的波形叠加在同一个 plot 上显示
-          4. 选一个参考通道，用“最近 3 秒的硬件时间戳窗口”估算采样率：
-             fs = N_samples_in_window / (t_now - t_oldest_in_window)
+          4. 选一个参考通道，用“最近 3 秒的硬件时间戳窗口”估算采样率（只有在勾选 '计算采样率' 时才执行）
           5. 根据 scroll_mode，切换两种走纸方式：
-             - 1：滚动窗口（当前实现）
-             - 2：扫屏重写（X 轴固定，从左到右写满后从左重新写，并绘制竖直指示线）
+             - 1：滚动窗口
+             - 2：扫屏重写（X 轴固定，并绘制竖直指示线）
         """
         # 安全判断（理论上不会 None，因为开始前已经检查）
         if self.sample_rate_hz is None or self.sample_rate_hz <= 0:
@@ -889,8 +907,8 @@ class Page2Widget(QtWidgets.QWidget):
                 self.channel_sample_index[ch] += 1
             self.sweep_index[ch] = idx
 
-        # -------- 2) 采样率估计：与模式无关，基于参考通道硬件时间戳 --------
-        if self.reference_channel == ch:
+        # -------- 2) 采样率估计：与模式无关，基于参考通道硬件时间戳（仅在 checkbox 勾选时计算） --------
+        if self.checkbox_enable_fs_estimate.isChecked() and self.reference_channel == ch:
             ts_now = packet.hardware_timestamp
             n_new = len(packet.data)
 
@@ -940,7 +958,7 @@ class Page2Widget(QtWidgets.QWidget):
         同时附上“最近 3 秒窗口”的采样率估计。
         """
         tooltip = f"{status} | 已接收 {packet_count} 包 | {channel_info}"
-        if self.fs_estimated_global > 0:
+        if self.fs_estimated_global > 0 and self.checkbox_enable_fs_estimate.isChecked():
             tooltip += f" | 采样率估计: {self.fs_estimated_global:.1f} Hz"
         self.label_1.setToolTip(tooltip)
 
@@ -964,16 +982,19 @@ class Page2Widget(QtWidgets.QWidget):
         """将y轴范围重置回 -200 ~ 200 μV"""
         self.plot_widget.setYRange(-200, 200)
 
-    # -------- 画图：两种走纸方式 --------
+    # -------- 画图：两种走纸方式 + 可选 1/2 降采样 --------
 
     def update_plot(self):
         """
         更新曲线显示：
         - 模式1：X轴为秒，固定 window_sec 秒窗口，所有“勾选”的通道叠加显示
         - 模式2：X轴固定为 [0, window_sec]，扫屏缓冲区按固定 X 坐标绘制，并显示竖直指示线
+        - 若勾选“绘图降采样1/2”，则在画图时对 X/Y 进行 ::2 降采样，只展示一半采样点
         """
         if not self.channel_curves:
             return
+
+        downsample = self.checkbox_downsample_plot.isChecked()
 
         # 模式1：滚动窗口
         if self.scroll_mode == 1:
@@ -999,10 +1020,19 @@ class Page2Widget(QtWidgets.QWidget):
 
                 x_data = list(x_deque)
                 y_data = list(y_deque)
-                curve.setData(x=x_data, y=y_data)
 
-                if x_data:
-                    last_x = x_data[-1]
+                # 可选：1/2 降采样
+                if downsample and len(x_data) > 1:
+                    x_plot = x_data[::2]
+                    y_plot = y_data[::2]
+                else:
+                    x_plot = x_data
+                    y_plot = y_data
+
+                curve.setData(x=x_plot, y=y_plot)
+
+                if x_plot:
+                    last_x = x_plot[-1]
                     if x_max is None or last_x > x_max:
                         x_max = last_x
 
@@ -1034,7 +1064,14 @@ class Page2Widget(QtWidgets.QWidget):
                     curve.setVisible(True)
 
                 # 直接用固定的 X 坐标和当前缓冲区的 Y
-                curve.setData(x=self.sweep_x, y=buf)
+                if downsample and len(buf) > 1:
+                    x_plot = self.sweep_x[::2]
+                    y_plot = buf[::2]
+                else:
+                    x_plot = self.sweep_x
+                    y_plot = buf
+
+                curve.setData(x=x_plot, y=y_plot)
 
             # 更新竖直指示线位置
             if self.sweep_line is not None:
