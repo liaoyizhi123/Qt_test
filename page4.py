@@ -368,7 +368,7 @@ class Page4Widget(QWidget):
             target_count = sum(1 for i in range(self.n_back, self.trials) if flags[i])
             if valid_positions >= 3:
                 ratio = target_count / valid_positions
-                if 0.4 <= ratio <= 0.6:
+                if 0.4 <= ratio <= 0.45:
                     best_seq, best_flags = seq, flags
                     break
             else:

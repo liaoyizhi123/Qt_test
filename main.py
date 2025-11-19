@@ -18,13 +18,13 @@ from page6 import Page6Widget
 from page7 import Page7Widget
 from page8 import Page8Widget
 from page9 import Page9Widget
+from page10 import Page10Widget  # FIXME.
 
 
 class Ui_MainWindow(QMainWindow):
 
     def __init__(self):
         super(Ui_MainWindow, self).__init__()
-        # super(Ui_MainWindow, self).__init__()
         self.setupUi(self)
 
     def setupUi(self, MainWindow):
@@ -142,28 +142,7 @@ class Ui_MainWindow(QMainWindow):
         self.verticalLayout.setContentsMargins(0, 0, 0, 0)
         self.verticalLayout.setSpacing(0)
         self.verticalLayout.setObjectName("verticalLayout")
-        # self.left_top = QtWidgets.QFrame(parent=self.left_frame)
-        # self.left_top.setMinimumSize(QtCore.QSize(50, 50))
-        # self.left_top.setMaximumSize(QtCore.QSize(16777215, 50))
-        # self.left_top.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
-        # self.left_top.setFrameShadow(QtWidgets.QFrame.Shadow.Raised)
-        # self.left_top.setObjectName("left_top")
-        # self.verticalLayout_7 = QtWidgets.QVBoxLayout(self.left_top)
-        # self.verticalLayout_7.setContentsMargins(0, 0, 0, 0)
-        # self.verticalLayout_7.setSpacing(0)
-        # self.verticalLayout_7.setObjectName("verticalLayout_7")
-        # self.btn_left_toggle = QtWidgets.QPushButton(parent=self.left_top)
-        # self.btn_left_toggle.setMinimumSize(QtCore.QSize(0, 50))
-        # self.btn_left_toggle.setMaximumSize(QtCore.QSize(16777215, 50))
-        # self.btn_left_toggle.setText("")
-        # icon = QtGui.QIcon()
-        # icon.addPixmap(QtGui.QPixmap("./view/resources/icons/cat.png"), QtGui.QIcon.Mode.Normal, QtGui.QIcon.State.Off)
-        # self.btn_left_toggle.setIcon(icon)
-        # self.btn_left_toggle.setIconSize(QtCore.QSize(32, 32))
-        # self.btn_left_toggle.setAutoRepeatInterval(100)
-        # self.btn_left_toggle.setObjectName("btn_left_toggle")
-        # self.verticalLayout_7.addWidget(self.btn_left_toggle)
-        # self.verticalLayout.addWidget(self.left_top)
+
         self.left_center = QtWidgets.QFrame(parent=self.left_frame)
         self.left_center.setMinimumSize(QtCore.QSize(50, 0))
         self.left_center.setFrameShape(QtWidgets.QFrame.Shape.StyledPanel)
@@ -185,13 +164,14 @@ class Ui_MainWindow(QMainWindow):
         self.btn_lef_home.setIconSize(QtCore.QSize(32, 32))
         self.btn_lef_home.setObjectName("btn_lef_home")
         self.verticalLayout_8.addWidget(self.btn_lef_home)
+        self.btn_lef_home.hide()
         # 左侧new按钮
         self.btn_lef_new = QtWidgets.QPushButton(parent=self.left_center)
         self.btn_lef_new.setMinimumSize(QtCore.QSize(0, 50))
         self.btn_lef_new.setMaximumSize(QtCore.QSize(16777215, 50))
         self.btn_lef_new.setText("")
         icon2 = QtGui.QIcon()
-        icon2.addPixmap(QtGui.QPixmap("resources/icons/media.png"), QtGui.QIcon.Mode.Normal, QtGui.QIcon.State.Off)
+        icon2.addPixmap(QtGui.QPixmap("resources/icons/data_view.png"), QtGui.QIcon.Mode.Normal, QtGui.QIcon.State.Off)
         self.btn_lef_new.setIcon(icon2)
         self.btn_lef_new.setIconSize(QtCore.QSize(32, 32))
         self.btn_lef_new.setObjectName("btn_lef_new")
@@ -206,6 +186,7 @@ class Ui_MainWindow(QMainWindow):
         self.btn_lef_save.setIconSize(QtCore.QSize(32, 32))
         self.btn_lef_save.setObjectName("btn_lef_save")
         self.verticalLayout_8.addWidget(self.btn_lef_save)
+        self.btn_lef_save.hide()
         # 左侧exit按钮
         self.btn_lef_exit = QtWidgets.QPushButton(parent=self.left_center)
         self.btn_lef_exit.setMinimumSize(QtCore.QSize(0, 50))
@@ -272,6 +253,17 @@ class Ui_MainWindow(QMainWindow):
         self.btn_lef_eye.setIconSize(QtCore.QSize(32, 32))
         self.btn_lef_eye.setObjectName("btn_lef_eye")
         self.verticalLayout_8.addWidget(self.btn_lef_eye)
+        # 眼电
+        self.btn_lef_eyelectro = QtWidgets.QPushButton(parent=self.left_center)
+        self.btn_lef_eyelectro.setMinimumSize(QtCore.QSize(0, 50))
+        self.btn_lef_eyelectro.setMaximumSize(QtCore.QSize(16777215, 50))
+        self.btn_lef_eyelectro.setText("")
+        icon10 = QtGui.QIcon()
+        icon10.addPixmap(QtGui.QPixmap("resources/icons/book.png"), QtGui.QIcon.Mode.Normal, QtGui.QIcon.State.Off)
+        self.btn_lef_eyelectro.setIcon(icon10)
+        self.btn_lef_eyelectro.setIconSize(QtCore.QSize(32, 32))
+        self.btn_lef_eyelectro.setObjectName("btn_lef_eyelectro")
+        self.verticalLayout_8.addWidget(self.btn_lef_eyelectro)
         # FIXME.
 
         # 左侧底部的按钮
@@ -339,6 +331,10 @@ class Ui_MainWindow(QMainWindow):
         self.page_9 = Page9Widget(self.stackedWidget)
         self.page_9.setObjectName("page_9")
         self.stackedWidget.addWidget(self.page_9)
+
+        self.page_10 = Page10Widget(self.stackedWidget)
+        self.page_10.setObjectName("page_10")
+        self.stackedWidget.addWidget(self.page_10)
         # FIXME.
 
         self.verticalLayout_9.addWidget(self.stackedWidget)
@@ -347,10 +343,11 @@ class Ui_MainWindow(QMainWindow):
         self.verticalLayout_3.addWidget(self.app_frame)
         MainWindow.setCentralWidget(self.base_widget)
 
+        # 不再在这里设置 index=3，默认逻辑交给 change_btn_page 统一处理
         self.retranslateUi(MainWindow)
-        self.stackedWidget.setCurrentIndex(3)
         QtCore.QMetaObject.connectSlotsByName(MainWindow)
 
+        # 绑定按钮与页面
         self.switch_page(
             self.btn_lef_home,
             self.btn_lef_new,
@@ -360,31 +357,13 @@ class Ui_MainWindow(QMainWindow):
             self.btn_lef_ma,
             self.btn_lef_mi_lower,
             self.btn_lef_mi_upper,
-            self.btn_lef_eye,  # FIXME.
+            self.btn_lef_eye,
+            self.btn_lef_eyelectro,  # FIXME.
             self.stackedWidget,
         )
 
-    #     self.stackedWidget.currentChanged.connect(self.update_button_styles)
-    #
-    # def update_button_styles(self):
-    #     # 获取当前显示的页面索引
-    #     current_index = self.stackedWidget.currentIndex()
-    #
-    #     # 重置所有按钮的背景颜色为默认
-    #     self.btn_lef_home.setStyleSheet("background-color: #ececec;")
-    #     self.btn_lef_new.setStyleSheet("background-color: #ececec;")
-    #     self.btn_lef_save.setStyleSheet("background-color: #ececec;")
-    #     self.btn_lef_exit.setStyleSheet("background-color: #ececec;")
-    #
-    #     # 根据当前的页面索引设置相应按钮的高亮颜色
-    #     if current_index == 0:
-    #         self.btn_lef_home.setStyleSheet("background-color: #d3d3d3;")  # 设置选中状态
-    #     elif current_index == 1:
-    #         self.btn_lef_new.setStyleSheet("background-color: #d3d3d3;")
-    #     elif current_index == 2:
-    #         self.btn_lef_save.setStyleSheet("background-color: #d3d3d3;")
-    #     elif current_index == 3:
-    #         self.btn_lef_exit.setStyleSheet("background-color: #d3d3d3;")
+        # ⭐ 关键：启动时默认展示 Page2（索引 1），并同步更新按钮样式和标题
+        self.change_btn_page(1, self.stackedWidget)
 
     def switch_page(
         self,
@@ -396,7 +375,8 @@ class Ui_MainWindow(QMainWindow):
         btn_lef_ma,
         btn_lef_mi_lower,
         btn_lef_mi_upper,
-        btn_lef_eye,  # FIXME.
+        btn_lef_eye,
+        btn_lef_eyelectro,  # FIXME.
         stackedWidget,
     ):
         btn_lef_home.clicked.connect(lambda: self.change_btn_page(0, stackedWidget))
@@ -407,49 +387,32 @@ class Ui_MainWindow(QMainWindow):
         btn_lef_ma.clicked.connect(lambda: self.change_btn_page(5, stackedWidget))
         btn_lef_mi_lower.clicked.connect(lambda: self.change_btn_page(6, stackedWidget))
         btn_lef_mi_upper.clicked.connect(lambda: self.change_btn_page(7, stackedWidget))
-        btn_lef_eye.clicked.connect(lambda: self.change_btn_page(8, stackedWidget))  # FIXME.
-        stackedWidget.setCurrentIndex(0)
+        btn_lef_eye.clicked.connect(lambda: self.change_btn_page(8, stackedWidget))
+        btn_lef_eyelectro.clicked.connect(lambda: self.change_btn_page(9, stackedWidget))  # FIXME.
+        # ⭐ 这里不再设置 currentIndex，避免和 change_btn_page 冲突
+        # stackedWidget.setCurrentIndex(1)
 
     def change_btn_page(self, current_index, stackedWidget):
         stackedWidget.setCurrentIndex(current_index)
         # 重置所有按钮的样式为默认状态
         default_style = """
                 QPushButton {
-                    border: none; /*将所有边框设置为无*/
-                    color:#00000000; /* 所有的QPushButton文字色为透明*/
+                    border: none;
+                    color:#00000000;
                 }
                 QPushButton:hover {
-                    background-color: #ececec; /* hover 状态的颜色 */
-                }
-                
-                QPushButton[spread="true"] { 当自定义特性spread="true"
-                    color: #dfdfdf;
-                }
-                #left_center QPushButton[selected="true"] { 当自定义特性selected="true"
-                    background-color: #282c34;
-                    border: none; 先将所有边框设置为无
-                    border-left: 3px solid qlineargradient(spread:pad, x1:0, y1:0.523, x2:0.971, y2:0.528682, stop:0.0511364 rgba(0, 255, 0, 255), stop:0.511364 rgba(0, 208, 0, 255), stop:0.988636 rgba(0, 179, 0, 255)); 将左侧的边框单独显示为渐变色
+                    background-color: #ececec;
                 }
                 """
 
         selected_style = """
                 QPushButton {
-                
-                    border: none; /*将所有边框设置为无*/
-                    color:#00000000; /* 所有的QPushButton文字色为透明*/
-                    background-color: #d3d3d3; /* 默认状态的颜色 */
+                    border: none;
+                    color:#00000000;
+                    background-color: #d3d3d3;
                 }
                 QPushButton:hover {
-                    background-color: #ececec; /* hover 状态的颜色 */
-                }
-                
-                QPushButton[spread="true"] { 当自定义特性spread="true"
-                    color: #dfdfdf;
-                }
-                #left_center QPushButton[selected="true"] { 当自定义特性selected="true"
-                    background-color: #282c34;
-                    border: none; 先将所有边框设置为无
-                    border-left: 3px solid qlineargradient(spread:pad, x1:0, y1:0.523, x2:0.971, y2:0.528682, stop:0.0511364 rgba(0, 255, 0, 255), stop:0.511364 rgba(0, 208, 0, 255), stop:0.988636 rgba(0, 179, 0, 255)); 将左侧的边框单独显示为渐变色
+                    background-color: #ececec;
                 }
                 """
 
@@ -462,11 +425,12 @@ class Ui_MainWindow(QMainWindow):
         self.btn_lef_ma.setStyleSheet(default_style)
         self.btn_lef_mi_lower.setStyleSheet(default_style)
         self.btn_lef_mi_upper.setStyleSheet(default_style)
-        self.btn_lef_eye.setStyleSheet(default_style)  # FIXME.
+        self.btn_lef_eye.setStyleSheet(default_style)
+        self.btn_lef_eyelectro.setStyleSheet(default_style)  # FIXME.
 
-        # 根据当前页面索引设置相应按钮的高亮颜色
+        # 根据当前页面索引设置相应按钮的高亮颜色 & 标题
         if current_index == 0:
-            self.btn_lef_home.setStyleSheet(selected_style)  # 设置选中状态
+            self.btn_lef_home.setStyleSheet(selected_style)
             self.proj_title.setText("Emotion Recognition")
         elif current_index == 1:
             self.btn_lef_new.setStyleSheet(selected_style)
@@ -490,12 +454,16 @@ class Ui_MainWindow(QMainWindow):
             self.btn_lef_mi_upper.setStyleSheet(selected_style)
             self.proj_title.setText("Motor Imagery(Upper Limb), 按下【开始实验】，同时开始记录脑电信号")
         elif current_index == 8:
-            self.btn_lef_eye.setStyleSheet(selected_style)  # FIXME.
+            self.btn_lef_eye.setStyleSheet(selected_style)
             self.proj_title.setText("睁眼/闭眼实验, 按下【开始实验】，同时开始记录脑电信号")
+        elif current_index == 9:  # FIXME.
+            self.btn_lef_eyelectro.setStyleSheet(selected_style)
+            self.proj_title.setText("眼电实验, 按下【开始实验】，同时开始记录脑电信号")
 
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
         MainWindow.setWindowTitle(_translate("MainWindow", "MainWindow"))
+        # 初始标题无所谓，会在 change_btn_page(1, ...) 时被覆盖
         self.proj_title.setText(_translate("MainWindow", "Emotion Recognition"))
         self.proj_date.setText(_translate("MainWindow", "Date"))
 
@@ -512,7 +480,6 @@ if __name__ == '__main__':
     load_qss(app)
 
     ui = Ui_MainWindow()
-    # ui.show()
     ui.showMaximized()
 
     sys.exit(app.exec())
