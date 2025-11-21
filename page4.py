@@ -1,3 +1,4 @@
+import os
 import random
 import string
 import datetime
@@ -53,6 +54,17 @@ class Page4Widget(QWidget):
 
     def __init__(self, parent=None):
         super(Page4Widget, self).__init__(parent)
+
+        # ====== N-back 数据根目录：data/nback ======
+        self.data_root = "data"
+        self.nback_root = os.path.join(self.data_root, "nback")
+        os.makedirs(self.nback_root, exist_ok=True)
+
+        # 当前被试 & 本次实验 run 的目录
+        self.current_user_name: str | None = None
+        self.user_dir: str | None = None               # data/nback/<name>
+        self.run_dir: str | None = None                # data/nback/<name>/<timestamp>
+        self.run_timestamp: str | None = None          # YYYYMMDDHHMMSS
 
         # 默认参数
         self.loops = 6
@@ -229,6 +241,18 @@ class Page4Widget(QWidget):
             )
             return
 
+        # ====== 构建目录结构：data/nback/<name>/<timestamp>/ ======
+        self.current_user_name = name
+        # data/nback/<name>
+        self.user_dir = os.path.join(self.nback_root, self.current_user_name)
+        os.makedirs(self.user_dir, exist_ok=True)
+
+        # data/nback/<name>/<YYYYMMDDHHMMSS>
+        self.run_timestamp = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
+        self.run_dir = os.path.join(self.user_dir, self.run_timestamp)
+        os.makedirs(self.run_dir, exist_ok=True)
+        # =======================================================
+
         # 2. 正式读取本页参数并初始化状态
         self.loops = self.loops_spin.value()
         self.trials = self.trials_spin.value()
@@ -248,13 +272,15 @@ class Page4Widget(QWidget):
         self.loop_hw_start = [None] * self.loops
         self.loop_hw_end = [None] * self.loops
 
-        # ==== 关键改动：在“有效点击 Start Sequence”之后立刻开始保存 EEG ====
+        # ==== 在“有效点击 Start Sequence”之后立刻开始保存 EEG ====
         if hasattr(eeg_page, "start_saving"):
             try:
-                eeg_page.start_saving()
+                # 把本次实验的 run_dir 传给 Page2，让 EEG CSV & markers.csv 写到同一目录
+                eeg_page.start_saving(self.run_dir)
             except Exception:
                 # Page2 内部会处理错误，这里不中断实验
                 pass
+
         # 尝试记录整个实验的起始片上时间（若能取到的话）
         first_hw = self._get_hw_timestamp_from_eeg()
         if first_hw is not None:
@@ -554,12 +580,19 @@ class Page4Widget(QWidget):
           - loop_start_hw / loop_end_hw 为该 loop 的开始/结束片上时间（秒）；
           - 后续可以用这两个时间在 CSV 的 Time 列中定位 EEG 片段。
         """
-        name = self.name_input.text().strip()
-        now_str = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+        name = self.current_user_name or self.name_input.text().strip()
         diff_label = self.diff_combo.currentText()
 
-        filename = (
-            f"logs/N_Back_{name}_{now_str}_"
+        # 优先使用本次 run 的目录：data/nback/<name>/<timestamp>
+        base_dir = self.run_dir or self.user_dir or self.nback_root
+        os.makedirs(base_dir, exist_ok=True)
+
+        # 文件名里的时间戳：优先用 run_timestamp，兜底用当前时间
+        ts_for_name = self.run_timestamp or datetime.datetime.now().strftime('%Y%m%d%H%M%S')
+
+        filename = os.path.join(
+            base_dir,
+            f"N_Back_{name}_{ts_for_name}_"
             f"loops{self.loops}_trials{self.trials}_delay{self.delay}_"
             f"difficulty{diff_label.replace(' ', '')}_{self.n_back}back.txt"
         )
@@ -602,7 +635,6 @@ class Page4Widget(QWidget):
         self.start_btn.show()
         self.settings_widget.show()
 
-        self.name_input.clear()
         self.sequence = []
         self.all_sequences.clear()
         self.trial_data.clear()
@@ -614,6 +646,12 @@ class Page4Widget(QWidget):
         self.hw_exp_end = None
         self.loop_hw_start = []
         self.loop_hw_end = []
+
+        # 重置目录相关
+        self.current_user_name = None
+        self.user_dir = None
+        self.run_dir = None
+        self.run_timestamp = None
 
         self.name_input.setFocus()
 

@@ -396,7 +396,8 @@ class Page2Widget(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super(Page2Widget, self).__init__(parent)
 
-        self.data_dir = "data"
+        self.default_data_dir = "data"
+        self.data_dir = self.default_data_dir
         os.makedirs(self.data_dir, exist_ok=True)
 
         # 传感器序列号（默认值 000003，真正的值在收到第一帧数据后解析）
@@ -1011,8 +1012,12 @@ class Page2Widget(QtWidgets.QWidget):
         else:
             self.stop_saving()
 
-    def start_saving(self):
-        """开始保存数据：创建 CSV 文件和 markers.csv"""
+    def start_saving(self, save_dir: str | None = None):
+        """开始保存数据：创建 CSV 文件和 markers.csv
+
+        - save_dir 为 None 时：使用当前 self.data_dir（默认是 "data"）
+        - save_dir 不为 None 时：优先使用 save_dir
+        """
         if self.is_saving:
             return
 
@@ -1027,11 +1032,22 @@ class Page2Widget(QtWidgets.QWidget):
             self.label_1.setStyleSheet("color: red")
             return
 
+        # ========= 新增：根据调用方传入的目录决定保存路径 =========
+        if save_dir is not None:
+            # 外部页面（如 Page4/5/6/7/8/9）传进来的完整目录，例如 data/nback/<name>/<ts>
+            self.data_dir = save_dir
+        else:
+            # Page2 自己点击“开始保存数据”时，回到默认目录 data/
+            self.data_dir = self.default_data_dir
+        # 确保目录存在
+        os.makedirs(self.data_dir, exist_ok=True)
+        # =========================================================
+
         self.is_saving = True
         self.channel_save_files.clear()
         self.channel_save_index.clear()
 
-        # 创建 markers.csv，并写入表头（放到 data 目录下）
+        # 创建 markers.csv，并写入表头（放到当前 data_dir 目录下）
         try:
             marker_path = os.path.join(self.data_dir, "markers.csv")
             self.marker_file = open(marker_path, "w", encoding="utf-8", newline="")

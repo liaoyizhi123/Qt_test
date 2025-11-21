@@ -2,9 +2,11 @@
 .idea
 __pycache__
 /data/*
-
+/logs/*
+.DS_store
 
 
 
 ##############################################
 !/data/readme.txt
+!/logs/readme.txt

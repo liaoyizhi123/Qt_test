@@ -59,9 +59,19 @@
 #         self.current_loop = 0
 #         self.current_index = 0
 #         self.sequence = []
-#         self.results_per_loop = []  # 存布尔：是否答对
-#         self.details_per_loop = []  # 存日志明细：(word_cn, color_en, 'T'/'F'/'N')
-#         self.responded = False      # 本 trial 是否已作答
+#         self.results_per_loop = []   # 每轮：布尔是否答对
+#         self.details_per_loop = []   # 每轮：[(word_cn, color_en, 'T'/'F'/'N'), ...]
+#         self.responded = False       # 本 trial 是否已作答
+
+#         # 与 EEG 采集页面（Page2）联动
+#         # 需要在主程序中设置：page5.eeg_page = page2
+#         self.eeg_page = None
+#         # 整个实验的开始/结束片上时间（可选，目前仅内部使用）
+#         self.hw_exp_start = None
+#         self.hw_exp_end = None
+#         # 每个 loop 的开始/结束片上时间（写入 txt）
+#         self.loop_hw_start = []
+#         self.loop_hw_end = []
 
 #         # ===== 外层布局：只负责把 main_container 居中 =====
 #         root_layout = QVBoxLayout(self)
@@ -206,6 +216,26 @@
 #             QMessageBox.warning(self, "错误", "请输入姓名！")
 #             return
 
+#         # 1. 检查 Page2 是否在监听 EEG 数据
+#         eeg_page = getattr(self, "eeg_page", None)
+#         if eeg_page is None or not hasattr(eeg_page, "is_listening"):
+#             QMessageBox.warning(
+#                 self,
+#                 "错误",
+#                 "未找到 EEG 采集页面，请在主程序中确保已创建并注入 Page2Widget。"
+#             )
+#             return
+
+#         if not eeg_page.is_listening():
+#             QMessageBox.warning(
+#                 self,
+#                 "提示",
+#                 "请先在【首页】点击“开始监测信号”，\n"
+#                 "确保已经开始接收EEG数据后，再启动 Stroop 实验。"
+#             )
+#             return
+
+#         # 2. 读取参数 & 初始化状态
 #         self.name = name
 #         self.loops = self.loops_spin.value()
 #         self.trials = self.trials_spin.value()
@@ -217,11 +247,30 @@
 #         self.results_per_loop = [[] for _ in range(self.loops)]
 #         self.details_per_loop = [[] for _ in range(self.loops)]
 
+#         # 初始化时间记录
+#         self.hw_exp_start = None
+#         self.hw_exp_end = None
+#         self.loop_hw_start = [None] * self.loops
+#         self.loop_hw_end = [None] * self.loops
+
+#         # ==== 关键：在“有效点击 Start Stroop”后立刻开始保存 EEG CSV ====
+#         if hasattr(eeg_page, "start_saving"):
+#             try:
+#                 eeg_page.start_saving()
+#             except Exception:
+#                 # Page2 内部会处理错误，这里不中断 Stroop 实验
+#                 pass
+
+#         # 尝试记录实验整体起始片上时间
+#         first_hw = self._get_hw_timestamp_from_eeg()
+#         if first_hw is not None:
+#             self.hw_exp_start = first_hw
+
 #         # 隐藏设置区
 #         self.name_input.parent().hide()
 #         self.start_btn.hide()
 
-#         # 初始倒计时
+#         # 初始倒计时（仅界面提示，不参与时间计算）
 #         self.countdown_secs = self.initial_countdown
 #         self.countdown_label.setText(f"{self.countdown_secs}秒后将开始实验")
 #         self.countdown_label.show()
@@ -266,7 +315,7 @@
 #             prev_word = w
 
 #         self.current_index = 0
-#         self.btn_container.show()   # 从本轮开始预留按钮区域（空/有按钮都不变形）
+#         self.btn_container.show()   # 从本轮开始按钮区域位置固定
 #         self.hint_label.show()
 #         self.show_stimulus()
 
@@ -274,6 +323,10 @@
 #         if self.current_index >= len(self.sequence):
 #             self.end_loop()
 #             return
+
+#         # 若是本轮第一个 trial，记录本轮开始片上时间
+#         if self.current_index == 0:
+#             self._record_loop_start_hw(self.current_loop - 1)
 
 #         self.hint_label.clear()
 #         self.btn_left.setChecked(False)
@@ -378,6 +431,9 @@
 #         self.show_stimulus()
 
 #     def end_loop(self):
+#         # 记录本轮结束时的片上时间
+#         self._record_loop_end_hw(self.current_loop - 1)
+
 #         self.stim_label.hide()
 #         self.btn_left.hide()
 #         self.btn_right.hide()
@@ -413,35 +469,112 @@
 #             QtCore.QTimer.singleShot(1000, self.update_end_countdown)
 #         else:
 #             self.countdown_label.hide()
+
+#             # ==== 实验整体结束：先停止 EEG 保存，再写 txt ====
+#             eeg_page = getattr(self, "eeg_page", None)
+#             if eeg_page is not None:
+#                 last_hw = self._get_hw_timestamp_from_eeg()
+#                 if last_hw is not None:
+#                     self.hw_exp_end = last_hw
+#                 if hasattr(eeg_page, "stop_saving"):
+#                     try:
+#                         eeg_page.stop_saving()
+#                     except Exception:
+#                         pass
+
 #             self.save_report()
 #             self.reset_ui()
 
+#     # ========== 与 Page2（EEG 页面）的时间戳交互辅助函数 ==========
+
+#     def _get_hw_timestamp_from_eeg(self):
+#         """
+#         从 Page2 获取当前最新的片上时间戳（秒），若失败则返回 None。
+#         """
+#         eeg_page = getattr(self, "eeg_page", None)
+#         if eeg_page is None:
+#             return None
+#         getter = getattr(eeg_page, "get_last_hardware_timestamp", None)
+#         if getter is None:
+#             return None
+#         try:
+#             return getter()
+#         except Exception:
+#             return None
+
+#     def _record_loop_start_hw(self, loop_index: int):
+#         """
+#         记录第 loop_index 个 loop 的开始片上时间。
+#         在 show_stimulus() 中，当 current_index == 0 时调用。
+#         """
+#         hw = self._get_hw_timestamp_from_eeg()
+#         if hw is None:
+#             return
+#         if 0 <= loop_index < self.loops:
+#             self.loop_hw_start[loop_index] = hw
+#             # 若整体起始时间尚未记录，则用第一次 loop start 作为备选
+#             if self.hw_exp_start is None:
+#                 self.hw_exp_start = hw
+
+#     def _record_loop_end_hw(self, loop_index: int):
+#         """
+#         记录第 loop_index 个 loop 的结束片上时间。
+#         在 end_loop() 中调用。
+#         """
+#         hw = self._get_hw_timestamp_from_eeg()
+#         if hw is None:
+#             return
+#         if 0 <= loop_index < self.loops:
+#             self.loop_hw_end[loop_index] = hw
+#             self.hw_exp_end = hw
+
+#     # ========== 报告与复位 ==========
+ 
 #     def save_report(self):
+#         """
+#         将本次 Stroop 实验写入 txt 报告。
+
+#         每一行格式：
+#             loop_start_hw,loop_end_hw,stroop,accuracy,seq_str
+
+#         其中：
+#           - loop_start_hw / loop_end_hw 为该 loop 的开始/结束片上时间（秒）；
+#           - accuracy 为该轮正确率；
+#           - seq_str 为该轮 trial 序列，形如：
+#               字‘红’颜色‘黄’T|字‘蓝’颜色‘绿’F|...
+#         """
 #         nowstr = datetime.now().strftime('%Y%m%d%H%M%S')
 #         mode = "split" if self.separate_phases else "normal"
 #         fname = (
-#             f"Stroop_{self.name}_{nowstr}_"
+#             f"logs/Stroop_{self.name}_{nowstr}_"
 #             f"loops{self.loops}_trials{self.trials}_delay{self.delay}_{mode}.txt"
 #         )
 
-#         trial_total = self.delay + (self.response_window if self.separate_phases else 0.0)
-
 #         with open(fname, "w", encoding="utf-8") as f:
-#             current_start = self.initial_countdown
 #             for i in range(self.loops):
-#                 start = current_start
-#                 end = start + self.trials * trial_total
-#                 acc = (sum(self.results_per_loop[i]) / self.trials) if self.trials else 0.0
+#                 # 计算该轮正确率
+#                 if self.trials:
+#                     acc = sum(self.results_per_loop[i]) / self.trials
+#                 else:
+#                     acc = 0.0
 
+#                 # 序列明细
 #                 seq_items = []
 #                 for w, c, tag in self.details_per_loop[i]:
 #                     c_cn = COLOR_NAME_MAP.get(c, c)
 #                     seq_items.append(f"字‘{w}’颜色‘{c_cn}’{tag}")
 #                 seq_str = "|".join(seq_items)
-#                 f.write(f"{start:.4f},{end:.4f},stroop,{acc:.2f},{seq_str}\n")
 
-#                 if i < self.loops - 1:
-#                     current_start = end + self.rest_duration
+#                 # 硬件时间
+#                 start_hw = self.loop_hw_start[i] if i < len(self.loop_hw_start) else None
+#                 end_hw = self.loop_hw_end[i] if i < len(self.loop_hw_end) else None
+#                 start_val = start_hw if isinstance(start_hw, (int, float)) else float('nan')
+#                 end_val = end_hw if isinstance(end_hw, (int, float)) else float('nan')
+
+#                 f.write(
+#                     f"{start_val:.6f},{end_val:.6f},"
+#                     f"stroop,{acc:.2f},{seq_str}\n"
+#                 )
 
 #     def reset_ui(self):
 #         self.current_loop = 0
@@ -449,6 +582,12 @@
 #         self.sequence = []
 #         self.results_per_loop = []
 #         self.details_per_loop = []
+
+#         # 重置时间记录
+#         self.hw_exp_start = None
+#         self.hw_exp_end = None
+#         self.loop_hw_start = []
+#         self.loop_hw_end = []
 
 #         self.stim_label.hide()
 #         self.btn_left.hide()
@@ -479,6 +618,7 @@
 #     w.show()
 #     sys.exit(app.exec())
 
+import os
 import sys
 import random
 from datetime import datetime
@@ -524,6 +664,17 @@ class Page5Widget(QWidget):
 
         # 可以按需要改，比如全屏时保持中间 600 宽
         self.setMinimumSize(800, 600)
+
+        # ====== Stroop 数据根目录：data/stroop ======
+        self.data_root = "data"
+        self.stroop_root = os.path.join(self.data_root, "stroop")
+        os.makedirs(self.stroop_root, exist_ok=True)
+
+        # 当前被试 & 本次实验 run 的目录
+        self.current_user_name: str | None = None
+        self.user_dir: str | None = None       # data/stroop/<name>
+        self.run_dir: str | None = None        # data/stroop/<name>/<timestamp>
+        self.run_timestamp: str | None = None  # YYYYMMDDHHMMSS
 
         # 默认参数
         self.name = ""
@@ -716,7 +867,16 @@ class Page5Widget(QWidget):
             )
             return
 
-        # 2. 读取参数 & 初始化状态
+        # 2. 构建目录结构：data/stroop/<name>/<timestamp>/
+        self.current_user_name = name
+        self.user_dir = os.path.join(self.stroop_root, self.current_user_name)
+        os.makedirs(self.user_dir, exist_ok=True)
+
+        self.run_timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        self.run_dir = os.path.join(self.user_dir, self.run_timestamp)
+        os.makedirs(self.run_dir, exist_ok=True)
+
+        # 3. 读取参数 & 初始化状态
         self.name = name
         self.loops = self.loops_spin.value()
         self.trials = self.trials_spin.value()
@@ -737,7 +897,8 @@ class Page5Widget(QWidget):
         # ==== 关键：在“有效点击 Start Stroop”后立刻开始保存 EEG CSV ====
         if hasattr(eeg_page, "start_saving"):
             try:
-                eeg_page.start_saving()
+                # 把本次实验的 run_dir 传给 Page2，让 EEG CSV & markers.csv 写到同一目录
+                eeg_page.start_saving(self.run_dir)
             except Exception:
                 # Page2 内部会处理错误，这里不中断 Stroop 实验
                 pass
@@ -1023,11 +1184,28 @@ class Page5Widget(QWidget):
           - accuracy 为该轮正确率；
           - seq_str 为该轮 trial 序列，形如：
               字‘红’颜色‘黄’T|字‘蓝’颜色‘绿’F|...
+        报告文件保存在：
+            data/stroop/<Name>/<YYYYMMDDHHMMSS>/Stroop_*.txt
         """
-        nowstr = datetime.now().strftime('%Y%m%d%H%M%S')
+        # 确定被试名称
+        name = (
+            self.current_user_name
+            or self.name
+            or self.name_input.text().strip()
+            or "unknown"
+        )
         mode = "split" if self.separate_phases else "normal"
-        fname = (
-            f"logs/Stroop_{self.name}_{nowstr}_"
+
+        # 优先使用本次 run 的目录：data/stroop/<name>/<timestamp>
+        base_dir = self.run_dir or self.user_dir or self.stroop_root
+        os.makedirs(base_dir, exist_ok=True)
+
+        # 文件名里的时间戳：优先用 run_timestamp，兜底用当前时间
+        ts_for_name = self.run_timestamp or datetime.now().strftime('%Y%m%d%H%M%S')
+
+        fname = os.path.join(
+            base_dir,
+            f"Stroop_{name}_{ts_for_name}_"
             f"loops{self.loops}_trials{self.trials}_delay{self.delay}_{mode}.txt"
         )
 
@@ -1070,6 +1248,12 @@ class Page5Widget(QWidget):
         self.loop_hw_start = []
         self.loop_hw_end = []
 
+        # 重置目录相关（不清空界面上的姓名输入框）
+        self.current_user_name = None
+        self.user_dir = None
+        self.run_dir = None
+        self.run_timestamp = None
+
         self.stim_label.hide()
         self.btn_left.hide()
         self.btn_right.hide()
@@ -1079,6 +1263,8 @@ class Page5Widget(QWidget):
 
         self.name_input.parent().show()
         self.start_btn.show()
+        # 可以顺手把焦点给 Name 输入框
+        self.name_input.setFocus()
 
     def keyPressEvent(self, event):
         if (
