@@ -1,35 +1,26 @@
-QFame{
-	border: none; /*将所有边框设置为无*/
-	background-color:#00000000;
+QFrame{
+    border: none; /* 将所有 QFrame 边框设置为无 */
+    background-color:#00000000;
 }
+
 #base_widget{ /*baseWidget*/
-	background-color: #f9f9f9;
+    background-color: #f9f9f9;
 }
 #top_frame{ /*顶边栏*/
-	background-color: #f9f9f9;
+    background-color: #f9f9f9;
 }
 #left_frame{
-	background-color: #f9f9f9;
+    background-color: #f9f9f9;
 }
-/*#page_1{ *//*stackedWidget*/
-/*	background-color: #ffffff;*/
-/*}*/
-/*#page_2{ *//*stackedWidget*/
-/*	background-color: lightgreen;*/
-/*}*/
-/*#page_3{ *//*stackedWidget*/
-/*	background-color: #708cf1;*/
-/*}*/
-/*#page_4{ *//*stackedWidget*/
-/*	background-color: #ffa135;*/
-/*}*/
 
+/* QLabel 通用样式 */
 QLabel{
-/*	border: none;*/
-	background-color:#00000000;
-/*	color:#dfdfdf;*/
-	color:#5d5d5d;
+/*  border: none;*/
+    background-color:#00000000;
+/*  color:#dfdfdf;*/
+    color:#5d5d5d;
 }
+
 QLabel#proj_title {
     font-weight: bold;
     font-size: 20px;  /* 按需调整大小 */
@@ -37,22 +28,48 @@ QLabel#proj_title {
     padding-left: 16px;
 }
 
-
+/* 通用按钮样式（非导航按钮、非 page 按钮） */
 QPushButton{
-	border: none;
-	color:#000000008
-}
-QPushButton:hover {
-	background-color: #ececec;
+    border: none;
+    color:#000000;   /* 默认文字颜色 */
 }
 
-QPushButton[spread="true"] {
-	color: #dfdfdf;
+QPushButton:hover {
+    background-color: #ececec;
 }
-#left_center QPushButton[selected="true"] {
-	background-color: #282c34;
-	border: none;
-	border-left: 3px solid qlineargradient(spread:pad, x1:0, y1:0.523, x2:0.971, y2:0.528682, stop:0.0511364 rgba(0, 255, 0, 255), stop:0.511364 rgba(0, 208, 0, 255), stop:0.988636 rgba(0, 179, 0, 255)); 将左侧的边框单独显示为渐变色
+
+/* 其他自定义属性 */
+QPushButton[spread="true"] {
+    color: #dfdfdf;
+}
+
+/* ================= 左侧导航栏按钮（通过属性控制） ================= */
+
+#left_center QPushButton[nav="true"] {
+    border: none;
+    background-color:#00000000;  /* 默认透明背景 */
+    color: transparent;          /* 文本透明，只显示图标 */
+    min-height: 50px;
+    max-height: 50px;
+    padding: 0px;
+    margin: 0px;
+}
+
+#left_center QPushButton[nav="true"]:hover {
+    background-color: #ececec;
+}
+
+#left_center QPushButton[nav="true"][selected="true"] {
+    background-color: #eaeaea;
+    border: none;
+    border-left: 3px solid qlineargradient(
+        spread:pad,
+        x1:0,   y1:0.523,
+        x2:0.971, y2:0.528682,
+        stop:0.0511364 rgba(0, 255, 0, 255),
+        stop:0.511364 rgba(0, 208, 0, 255),
+        stop:0.988636 rgba(0, 179, 0, 255)
+    ); /* 左侧的边框单独显示为渐变色 */
 }
 
 /******************************************************page1******************************************************/
@@ -89,18 +106,19 @@ QPushButton[spread="true"] {
     border: 1px solid #90A4AE; /* 聚焦时边框变深 */
     outline: none; /* 去除默认的聚焦轮廓 */
 }
+
 #stackedWidget QLabel{
-      border: 1px solid #4CAF50;
-/*    border-radius: 4px; *//* 圆角边框 */
-      padding: 5px;  /* 内边距 */
+    border: 1px solid #4CAF50;
+/*  border-radius: 4px; *//* 圆角边框 */
+    padding: 5px;  /* 内边距 */
+}
+
+#top_frame{ /*顶边栏*/
+    background-color: #f9f9f9;
+    border-bottom: 1px solid #d0d0d0;  /* ⭐ 新增：底部分隔线 */
+}
+
+#main_content {
+    background-color: #ffffff;  /* 主内容区域右侧整体为白色 */
 }
 /******************************************************page1******************************************************/
-
-
-
-
-
-
-
-
-

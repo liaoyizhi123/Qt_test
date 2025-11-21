@@ -28,7 +28,7 @@ class Page4Widget(QWidget):
 
     规则：
       - 选择 N-back（1/2/3）。
-      - 从第 N 个字符开始，当当前字符与 N 个之前的字符相同：
+      - 从第 N 个字符开始，当当前字符与 N 个之前的字符相同时：
           => target trial。
       - 被试若认为是 match：
           => 按 “匹配 / Match” 按钮 或 键盘 Left。
@@ -40,6 +40,15 @@ class Page4Widget(QWidget):
       - 对 1-back：target trial 为重复是合理的，允许。
       - 在可成为 target 的位置中（i >= N）：
           target 比例控制在 40%~60%（当有效位置数>=3时）。
+
+    时间记录逻辑（已改为片上时间）：
+      - 不再使用 initial_countdown / loops / delay 计算理论时间；
+      - 每个 loop 的开始与结束时间，直接从 Page2 的 get_last_hardware_timestamp()
+        获取片上时间（硬件时间戳，单位秒）；
+      - write_report() 中每一行的 start,end 即为该 loop 的开始/结束片上时间，
+        可在 CSV 中找到完全相同的 Time 值，用于截取 EEG 片段。
+      - EEG CSV 的写入从“通过校验后有效点击 Start Sequence”起一直持续到
+        最后“实验结束，X秒”倒计时结束后才停止。
     """
 
     def __init__(self, parent=None):
@@ -52,7 +61,7 @@ class Page4Widget(QWidget):
         self.diff = 0
         self.n_back = 2  # 默认 2-back
 
-        # 固定倒计时和休息时长（秒）
+        # 固定倒计时和休息时长（秒）（仅用于界面，不再参与时间计算）
         self.initial_countdown = 10.0
         self.rest_duration = 10.0
 
@@ -63,6 +72,15 @@ class Page4Widget(QWidget):
         self.trial_data = []
         self.current_loop = 0  # 当前是第几轮（1-based）
         self.current_index = 0  # 当前轮中的 trial 索引（0-based）
+
+        # 与 EEG 采集页面（Page2）联动
+        self.eeg_page = None
+        # 整个实验的开始/结束片上时间（可选，当前未写入文件）
+        self.hw_exp_start = None
+        self.hw_exp_end = None
+        # 每个 loop 的开始/结束片上时间（写入 txt）
+        self.loop_hw_start = []
+        self.loop_hw_end = []
 
         # 允许接收键盘事件
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
@@ -192,6 +210,26 @@ class Page4Widget(QWidget):
             QMessageBox.warning(self, "错误", "请输入姓名！")
             return
 
+        # 1. 检查 Page2 是否在监听 EEG 数据
+        eeg_page = getattr(self, "eeg_page", None)
+        if eeg_page is None or not hasattr(eeg_page, "is_listening"):
+            QMessageBox.warning(
+                self,
+                "错误",
+                "未找到 EEG 采集页面，请在主程序中确保已创建并注入 Page2Widget。"
+            )
+            return
+
+        if not eeg_page.is_listening():
+            QMessageBox.warning(
+                self,
+                "提示",
+                "请先在【首页】点击“开始监测信号”，\n"
+                "确保已经开始接收EEG数据后，再启动 N-back 实验。"
+            )
+            return
+
+        # 2. 正式读取本页参数并初始化状态
         self.loops = self.loops_spin.value()
         self.trials = self.trials_spin.value()
         self.delay = self.delay_spin.value()
@@ -204,6 +242,25 @@ class Page4Widget(QWidget):
         self.current_loop = 0
         self.current_index = 0
 
+        # 清空时间记录（片上时间）
+        self.hw_exp_start = None
+        self.hw_exp_end = None
+        self.loop_hw_start = [None] * self.loops
+        self.loop_hw_end = [None] * self.loops
+
+        # ==== 关键改动：在“有效点击 Start Sequence”之后立刻开始保存 EEG ====
+        if hasattr(eeg_page, "start_saving"):
+            try:
+                eeg_page.start_saving()
+            except Exception:
+                # Page2 内部会处理错误，这里不中断实验
+                pass
+        # 尝试记录整个实验的起始片上时间（若能取到的话）
+        first_hw = self._get_hw_timestamp_from_eeg()
+        if first_hw is not None:
+            self.hw_exp_start = first_hw
+
+        # 之后才隐藏设置区、开始倒计时
         self.settings_widget.hide()
         self.start_btn.hide()
 
@@ -214,7 +271,7 @@ class Page4Widget(QWidget):
 
         self.setFocus()
 
-        # 初始倒计时
+        # 初始倒计时（仅界面提示，不参与时间计算）
         self.countdown_label.setText(f"{int(self.initial_countdown)}秒后将开始实验")
         self.countdown_label.show()
         QtCore.QTimer.singleShot(1000, lambda: self.update_countdown(self.initial_countdown - 1))
@@ -224,10 +281,12 @@ class Page4Widget(QWidget):
             self.countdown_label.setText(f"{int(secs)}秒后将开始实验")
             QtCore.QTimer.singleShot(1000, lambda: self.update_countdown(secs - 1))
         else:
+            # 倒计时结束，正式进入第一个 loop（不再在这里调用 start_saving）
             self.countdown_label.hide()
             self.current_loop = 1
             self.current_index = 0
             self.sequence = []
+            self.response_btn.hide()
             self.show_loop()
 
     def show_char_with_animation(self, ch: str):
@@ -245,8 +304,13 @@ class Page4Widget(QWidget):
         if not self.sequence:
             self.generate_sequence()
 
+        loop_index = self.current_loop - 1
+
         # 当前轮结束
         if self.current_index >= self.trials:
+            # 记录本轮结束时的片上时间
+            self._record_loop_end_hw(loop_index)
+
             self.response_btn.hide()
             if self.current_loop < self.loops:
                 self.current_loop += 1
@@ -263,8 +327,11 @@ class Page4Widget(QWidget):
                 QtCore.QTimer.singleShot(1000, lambda: self.do_rest_end(self.rest_duration - 1))
             return
 
+        # 若是本轮的第一个 trial，记录本轮开始的片上时间
+        if self.current_index == 0:
+            self._record_loop_start_hw(loop_index)
+
         # 当前 trial
-        loop_index = self.current_loop - 1
         trial = self.trial_data[loop_index][self.current_index]
         ch = trial["char"]
 
@@ -313,6 +380,19 @@ class Page4Widget(QWidget):
         else:
             self.countdown_label.hide()
             self.response_btn.hide()
+
+            # ==== 关键点：等“实验结束倒计时”结束之后，才停止保存 EEG ====
+            eeg_page = getattr(self, "eeg_page", None)
+            if eeg_page is not None:
+                last_hw = self._get_hw_timestamp_from_eeg()
+                if last_hw is not None:
+                    self.hw_exp_end = last_hw
+                if hasattr(eeg_page, "stop_saving"):
+                    try:
+                        eeg_page.stop_saving()
+                    except Exception:
+                        pass
+
             self.write_report()
             self.reset_ui()
 
@@ -416,33 +496,97 @@ class Page4Widget(QWidget):
         else:
             super().keyPressEvent(event)
 
+    # ========== 与 Page2（EEG 页面）的时间戳交互辅助函数 ==========
+
+    def _get_hw_timestamp_from_eeg(self):
+        """
+        从 Page2 获取当前最新的片上时间戳（秒）。
+        若未能获取则返回 None。
+        """
+        eeg_page = getattr(self, "eeg_page", None)
+        if eeg_page is None:
+            return None
+        getter = getattr(eeg_page, "get_last_hardware_timestamp", None)
+        if getter is None:
+            return None
+        try:
+            return getter()
+        except Exception:
+            return None
+
+    def _record_loop_start_hw(self, loop_index: int):
+        """
+        记录第 loop_index 个 loop 的开始片上时间。
+        在 show_loop() 中，当 current_index == 0 时调用。
+        """
+        hw = self._get_hw_timestamp_from_eeg()
+        if hw is None:
+            return
+        if 0 <= loop_index < self.loops:
+            self.loop_hw_start[loop_index] = hw
+            # 如果整个实验的起始时间还没设置，就用第一次 loop start 做总起点（如果之前没成功取到的话）
+            if self.hw_exp_start is None:
+                self.hw_exp_start = hw
+
+    def _record_loop_end_hw(self, loop_index: int):
+        """
+        记录第 loop_index 个 loop 的结束片上时间。
+        在 show_loop() 中，当 current_index >= trials 时调用。
+        """
+        hw = self._get_hw_timestamp_from_eeg()
+        if hw is None:
+            return
+        if 0 <= loop_index < self.loops:
+            self.loop_hw_end[loop_index] = hw
+            # 实验结束时间持续更新为最后一次 loop end
+            self.hw_exp_end = hw
+
     # ========== 报告与复位 ==========
 
     def write_report(self):
+        """
+        将本次 N-back 实验写入 txt 报告。
+
+        每一行格式：
+            loop_start_hw,loop_end_hw,difficulty_label,n_back,sequence,target_flags,response_flags
+
+        其中：
+          - loop_start_hw / loop_end_hw 为该 loop 的开始/结束片上时间（秒）；
+          - 后续可以用这两个时间在 CSV 的 Time 列中定位 EEG 片段。
+        """
         name = self.name_input.text().strip()
         now_str = datetime.datetime.now().strftime('%Y%m%d%H%M%S')
         diff_label = self.diff_combo.currentText()
 
         filename = (
-            f"N_Back_{name}_{now_str}_"
+            f"logs/N_Back_{name}_{now_str}_"
             f"loops{self.loops}_trials{self.trials}_delay{self.delay}_"
             f"difficulty{diff_label.replace(' ', '')}_{self.n_back}back.txt"
         )
 
         try:
             with open(filename, 'w', encoding='utf-8') as f:
-
                 for loop_idx in range(self.loops):
-                    start = self.initial_countdown + loop_idx * (self.trials * self.delay + self.rest_duration)
-                    end = start + self.trials * self.delay
-
                     trials = self.trial_data[loop_idx]
                     seq_str = ' '.join(t["char"] for t in trials)
                     tgt_str = ' '.join('1' if t["target"] else '0' for t in trials)
                     resp_str = ' '.join('1' if t["response"] else '0' for t in trials)
 
+                    start_hw = None
+                    end_hw = None
+                    if 0 <= loop_idx < len(self.loop_hw_start):
+                        start_hw = self.loop_hw_start[loop_idx]
+                    if 0 <= loop_idx < len(self.loop_hw_end):
+                        end_hw = self.loop_hw_end[loop_idx]
+
+                    # 若未成功获取到时间戳，用 NaN 占位，避免格式化报错
+                    start_val = start_hw if isinstance(start_hw, (int, float)) else float('nan')
+                    end_val = end_hw if isinstance(end_hw, (int, float)) else float('nan')
+
                     f.write(
-                        f"{start:.4f},{end:.4f}," f"{diff_label},{self.n_back}," f"{seq_str},{tgt_str},{resp_str}\n"
+                        f"{start_val:.6f},{end_val:.6f},"
+                        f"{diff_label},{self.n_back},"
+                        f"{seq_str},{tgt_str},{resp_str}\n"
                     )
         except Exception as e:
             print("写入报告失败：", e)
@@ -464,6 +608,12 @@ class Page4Widget(QWidget):
         self.trial_data.clear()
         self.current_loop = 0
         self.current_index = 0
+
+        # 重置时间记录
+        self.hw_exp_start = None
+        self.hw_exp_end = None
+        self.loop_hw_start = []
+        self.loop_hw_end = []
 
         self.name_input.setFocus()
 

@@ -1,5 +1,3 @@
-# page9.py
-
 import sys
 from datetime import datetime
 
@@ -27,28 +25,15 @@ class Page9Widget(QWidget):
     """
     睁眼/闭眼范式（Run 级设计）
 
-    时间从“点击开始按钮”的时刻算起（t=0）。
+    现在的时间记录逻辑：
+      - 点击“开始实验”后，如果 Page2 正在接收数据，则立刻调用 start_saving()，
+        开始写四个 CSV，并在内部用片上时间做时间戳。
+      - 每个激活段（open1 / closed / open2）：
+          段开始：从 Page2 取一次片上时间，记为 start_hw（秒）
+          段结束：再次取一次片上时间，记为 end_hw（秒）
+      - txt 日志每一行的第 1/2 列为硬件时间（start_hw, end_hw），可直接和 CSV 里的 Time 列对齐截取。
 
-    每个 run 结构示意（以 To/ Tc / Tr 为配置）：
-
-      初始一次：
-        0–10s: 初始倒计时（不记日志）
-
-      每个 run（i = 1..N）：
-        +3s:   提示“请睁眼”（3s，不记日志）
-        +To:   eye_open（记日志）
-        +Tc:   提示“请闭眼”+闭眼采集（同一时间段；记日志为 eye_closed）
-        +To:   提示“请睁眼”+睁眼采集（同一时间段；记日志为第二段 eye_open）
-        +3s:   “采集结束”提示（不记日志）
-        +Tr:   休息（仅在非最后一个 run，不记日志）
-
-    激活期标签：
-      - eye_open
-      - eye_closed
-
-    日志：
-      start_sec,end_sec,condition,duration=秒,run=idx,segment=标记
-      所有时间为逻辑时间（相对 Start 点击）。
+    原始逻辑时间 logical_ms 仍在内部用于计算 duration，但不再写入文件。
     """
 
     def __init__(self, parent=None):
@@ -58,7 +43,7 @@ class Page9Widget(QWidget):
 
         # ---------- 固定/默认参数 ----------
         self.initial_countdown = 10  # 实验开始前倒计时（秒）
-        self.cue_open_pre = 3  # ✅ 每个 run 开始时“请睁眼”提示时长（秒，原来是5，改为3）
+        self.cue_open_pre = 3  # 每个 run 开始时“请睁眼”提示时长（秒）
         self.end_cue_duration = 3  # 每个 run 的“采集结束”提示时长（秒）
 
         self.default_open_duration = 10  # 默认 eye_open 激活期（秒）
@@ -74,7 +59,7 @@ class Page9Widget(QWidget):
         self.name = ""
         self.total_runs = self.default_runs
         self.current_run = 0  # 从 0 开始计数
-        self.logical_ms = 0  # 逻辑时间：start 按下 = 0
+        self.logical_ms = 0  # 逻辑时间：用于内部计算，不写文件
         self.trial_logs = []  # 每个激活期一条记录
 
         self.open_duration = self.default_open_duration
@@ -82,6 +67,12 @@ class Page9Widget(QWidget):
         self.rest_duration = self.default_rest_duration
 
         self._countdown_timer = None
+
+        # ===== 与 EEG 采集页面（Page2）联动 =====
+        # 在主程序中需要： page9.eeg_page = page2
+        self.eeg_page = None
+        self.hw_exp_start = None
+        self.hw_exp_end = None
 
         # ---------- 语音 ----------
         self.tts = None
@@ -95,7 +86,7 @@ class Page9Widget(QWidget):
         self.instruction = QLabel(
             "填写信息后点击开始。\n"
             "本范式在每个 Run 内按顺序采集：睁眼 → 闭眼 → 睁眼。\n"
-            "时间轴从点击 Start 那一刻开始，请同步启动 EEG 采集。"
+            "原本要求从点击 Start 起手动同步 EEG，现在已自动调用 Page2 开始保存。"
         )
         f = self.instruction.font()
         f.setPointSize(13)
@@ -212,6 +203,18 @@ class Page9Widget(QWidget):
             QMessageBox.warning(self, "错误", "激活期时长必须大于 0 秒。")
             return
 
+        # ===== 检查 EEG 采集页面状态 =====
+        eeg_page = getattr(self, "eeg_page", None)
+        if eeg_page is None or not hasattr(eeg_page, "is_listening"):
+            QMessageBox.warning(self, "错误", "未找到 EEG 采集页面，请在主程序中确保已创建并注入 Page2Widget。")
+            return
+
+        if not eeg_page.is_listening():
+            QMessageBox.warning(
+                self, "提示", "请先在【首页】点击“开始监测信号”，\n" "确保已经开始接收EEG数据后，再启动本实验范式。"
+            )
+            return
+
         self.name = name
         self.open_duration = To
         self.closed_duration = Tc
@@ -223,12 +226,25 @@ class Page9Widget(QWidget):
         self.logical_ms = 0
         self.trial_logs = []
 
+        # ===== 启动 EEG CSV 记录（从点击“开始实验”这一刻起） =====
+        self.hw_exp_start = None
+        self.hw_exp_end = None
+        try:
+            if hasattr(eeg_page, "start_saving"):
+                eeg_page.start_saving()
+        except Exception:
+            pass
+
+        first_hw = self._get_hw_timestamp_from_eeg()
+        if first_hw is not None:
+            self.hw_exp_start = first_hw
+
         # UI 切换
         self.instruction.hide()
         self.start_btn.hide()
         self.settings_widget.hide()
 
-        # 初始倒计时，从此刻起 t=0
+        # 初始倒计时（此时 EEG 已经在记录）
         self._show_fullscreen_message(
             "{n}秒后将开始实验",
             self.initial_countdown,
@@ -237,7 +253,7 @@ class Page9Widget(QWidget):
         )
 
     def _after_initial_countdown(self):
-        # 初始倒计时结束，逻辑时间前进
+        # 初始倒计时结束，逻辑时间前进（仅内部使用）
         self.logical_ms += self.initial_countdown * 1000
         self._start_run()
 
@@ -262,7 +278,7 @@ class Page9Widget(QWidget):
         )
 
     def _run_open1(self):
-        # 完成 3s 提示
+        # 完成 3s 提示，逻辑时间推进
         self.logical_ms += self.cue_open_pre * 1000
 
         dur = self.open_duration
@@ -275,11 +291,15 @@ class Page9Widget(QWidget):
                 "condition": self.COND_OPEN,
                 "start_ms": start_ms,
                 "end_ms": end_ms,
+                "start_hw": None,  # 片上时间（秒）
+                "end_hw": None,
                 "duration": dur,
                 "run": self.current_run + 1,
                 "segment": "open1",
             }
         )
+        idx = len(self.trial_logs) - 1
+        self._record_segment_start_hw(idx)
 
         self._apply_bg("#ffffff")
         self._apply_fg("#000000")
@@ -290,7 +310,11 @@ class Page9Widget(QWidget):
         QtCore.QTimer.singleShot(dur * 1000, self._run_closed)
 
     def _run_closed(self):
-        # 第一次睁眼结束
+        # open1 段结束时记录片上结束时间
+        if self.trial_logs:
+            self._record_segment_end_hw(len(self.trial_logs) - 1)
+
+        # 第一次睁眼结束，逻辑时间推进
         self.logical_ms = self.trial_logs[-1]["end_ms"]
 
         dur = self.closed_duration
@@ -303,11 +327,15 @@ class Page9Widget(QWidget):
                 "condition": self.COND_CLOSED,
                 "start_ms": start_ms,
                 "end_ms": end_ms,
+                "start_hw": None,
+                "end_hw": None,
                 "duration": dur,
                 "run": self.current_run + 1,
                 "segment": "closed",
             }
         )
+        idx = len(self.trial_logs) - 1
+        self._record_segment_start_hw(idx)
 
         txt = "闭眼数据采集中"
         self._speak("请闭眼")
@@ -320,6 +348,10 @@ class Page9Widget(QWidget):
         QtCore.QTimer.singleShot(dur * 1000, self._run_open2)
 
     def _run_open2(self):
+        # closed 段结束时记录片上结束时间
+        if self.trial_logs:
+            self._record_segment_end_hw(len(self.trial_logs) - 1)
+
         # 闭眼结束
         self.logical_ms = self.trial_logs[-1]["end_ms"]
 
@@ -333,11 +365,15 @@ class Page9Widget(QWidget):
                 "condition": self.COND_OPEN,
                 "start_ms": start_ms,
                 "end_ms": end_ms,
+                "start_hw": None,
+                "end_hw": None,
                 "duration": dur,
                 "run": self.current_run + 1,
                 "segment": "open2",
             }
         )
+        idx = len(self.trial_logs) - 1
+        self._record_segment_start_hw(idx)
 
         txt = "睁眼数据采集中"
         self._speak("请睁眼")
@@ -350,7 +386,11 @@ class Page9Widget(QWidget):
         QtCore.QTimer.singleShot(dur * 1000, self._run_end_cue)
 
     def _run_end_cue(self):
-        # 第二次睁眼结束
+        # 第二次睁眼结束时记录片上结束时间
+        if self.trial_logs:
+            self._record_segment_end_hw(len(self.trial_logs) - 1)
+
+        # 第二次睁眼结束，逻辑时间推进
         self.logical_ms = self.trial_logs[-1]["end_ms"]
 
         # 3s “采集结束”提示（不记日志）
@@ -466,17 +506,93 @@ class Page9Widget(QWidget):
         self.stage_label.setStyleSheet("")
         self.countdown_label.setStyleSheet("")
 
+    # ---------- 与 Page2 的时间戳交互 ----------
+
+    def _get_hw_timestamp_from_eeg(self):
+        """
+        从 Page2 获取当前最新的片上时间戳（秒），若失败则返回 None。
+        """
+        eeg_page = getattr(self, "eeg_page", None)
+        if eeg_page is None:
+            return None
+        getter = getattr(eeg_page, "get_last_hardware_timestamp", None)
+        if getter is None:
+            return None
+        try:
+            return getter()
+        except Exception:
+            return None
+
+    def _record_segment_start_hw(self, idx: int):
+        """在某一激活段开始时调用，记录该段 start_hw。"""
+        hw = self._get_hw_timestamp_from_eeg()
+        if hw is None:
+            return
+        if 0 <= idx < len(self.trial_logs):
+            self.trial_logs[idx]["start_hw"] = hw
+            if self.hw_exp_start is None:
+                self.hw_exp_start = hw
+
+    def _record_segment_end_hw(self, idx: int):
+        """在某一激活段结束时调用，记录该段 end_hw。"""
+        hw = self._get_hw_timestamp_from_eeg()
+        if hw is None:
+            return
+        if 0 <= idx < len(self.trial_logs):
+            self.trial_logs[idx]["end_hw"] = hw
+            self.hw_exp_end = hw
+
     # ---------- 结束 & 中断 ----------
 
     def _finish_and_save(self):
+        """
+        所有 run 完成后调用：
+          - 尝试停止 EEG 保存
+          - 写入日志
+          - 重置 UI
+        """
+        eeg_page = getattr(self, "eeg_page", None)
+        if eeg_page is not None:
+            last_hw = self._get_hw_timestamp_from_eeg()
+            if last_hw is not None:
+                self.hw_exp_end = last_hw
+            if hasattr(eeg_page, "stop_saving"):
+                try:
+                    eeg_page.stop_saving()
+                except Exception:
+                    pass
+
         self._save_report()
         self._reset_ui()
 
     def abort_and_finalize(self):
+        """
+        ESC 中断：
+          - 尝试停止 EEG 保存
+          - 写 ABORT 日志
+        """
+        eeg_page = getattr(self, "eeg_page", None)
+        if eeg_page is not None:
+            last_hw = self._get_hw_timestamp_from_eeg()
+            if last_hw is not None:
+                self.hw_exp_end = last_hw
+            if hasattr(eeg_page, "stop_saving"):
+                try:
+                    eeg_page.stop_saving()
+                except Exception:
+                    pass
+
         self._save_report(aborted=True)
         self._reset_ui()
 
     def _save_report(self, aborted: bool = False):
+        """
+        每一行：
+          start_hw,end_hw,condition,duration=秒,run=idx,segment=标记
+
+        其中 start_hw / end_hw 为片上时间（秒，float），
+        若当时未能获取则为 NaN。
+        """
         if not self.trial_logs:
             return
         ts = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -485,13 +601,24 @@ class Page9Widget(QWidget):
         try:
             with open(fname, "w", encoding="utf-8") as f:
                 for rec in self.trial_logs:
-                    t0 = rec["start_ms"] / 1000.0
-                    t1 = rec["end_ms"] / 1000.0
+                    start_hw = rec.get("start_hw")
+                    end_hw = rec.get("end_hw")
+
+                    if isinstance(start_hw, (int, float)):
+                        t0 = float(start_hw)
+                    else:
+                        t0 = float("nan")
+
+                    if isinstance(end_hw, (int, float)):
+                        t1 = float(end_hw)
+                    else:
+                        t1 = float("nan")
+
                     cond = rec["condition"]
                     dur = rec["duration"]
                     run = rec.get("run", "")
                     seg = rec.get("segment", "")
-                    f.write(f"{t0:.3f},{t1:.3f},{cond},duration={dur},run={run},segment={seg}\n")
+                    f.write(f"{t0:.6f},{t1:.6f},{cond}," f"duration={dur},run={run},segment={seg}\n")
         except Exception as e:
             QMessageBox.critical(self, "保存失败", f"写入日志失败：{e}")
 
@@ -515,6 +642,8 @@ class Page9Widget(QWidget):
         self.current_run = 0
         self.logical_ms = 0
         self.trial_logs = []
+        self.hw_exp_start = None
+        self.hw_exp_end = None
 
 
 if __name__ == "__main__":

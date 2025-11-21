@@ -1,3 +1,4 @@
+import os
 import enum
 import re
 import socket
@@ -23,7 +24,7 @@ class LabelStates(enum.Enum):
     # 未监听：初始化 / 停止后的状态
     stopped = "未监听（请填写端口号后点击开始）"
     # 已开启UDP监听，但还没有收到数据
-    listening = "已开启UDP监听，等待数据..."
+    listening = "已开启UDP监听，但还没有收到数据"
     # 已经收到数据，正在实时接收并绘图
     receiving = "正在接收EEG数据..."
 
@@ -84,7 +85,6 @@ class UdpEegReceiver(QObject):
 
     # PyQt6信号定义
     data_received = pyqtSignal(object)  # 发出 EegDataPacket 实例
-    status_changed = pyqtSignal(str, int, str)  # (状态, 包数量, 通道信息)
     error_occurred = pyqtSignal(str)  # 错误发生
     sync_established = pyqtSignal(float)  # 时间同步建立，传递偏移量
 
@@ -107,13 +107,19 @@ class UdpEegReceiver(QObject):
         self.active_channels = set()
         self.logger = logging.getLogger("UdpEegReceiver")
 
-        # 统计用
-        self.last_status_update = time.time()
-        self.status_update_interval = 1.0  # 每秒更新一次状态
-
         self._recv_count = 0
         self._last_stat_time = time.time()
         self.receiver_thread: Optional[threading.Thread] = None
+
+        self._last_hw_timestamp: Optional[float] = None
+
+    def get_last_hw_timestamp(self) -> Optional[float]:
+        """返回最近一次接收到的数据包的片上时间戳（秒）。如果还没有收到任何数据则返回 None。"""
+        return self._last_hw_timestamp
+
+    def is_running(self) -> bool:
+        """当前 UDP 接收线程是否在运行。"""
+        return self.running
 
     # -------- 启动 / 停止 --------
 
@@ -180,7 +186,7 @@ class UdpEegReceiver(QObject):
                 data, addr = self.socket.recvfrom(self.buffer_size)
                 system_ts = time.time()
 
-                # 统计接收速率
+                # 统计接收速率（仅日志用）
                 self._recv_count += 1
                 if self._recv_count % 100 == 0:
                     elapsed = system_ts - self._last_stat_time
@@ -190,6 +196,24 @@ class UdpEegReceiver(QObject):
 
                 # 解析EEG数据包
                 packets = self._parse_eeg_packet(data, system_ts)
+
+                # 如果解析不到合法数据，直接跳过
+                if not packets:
+                    continue
+
+                # ------- 按“包”检查硬件时间戳是否倒退 -------
+                current_hw_ts = packets[0].hardware_timestamp
+
+                if self._last_hw_timestamp is not None and current_hw_ts < self._last_hw_timestamp:
+                    # 当前包时间戳比上一包小，认为是“倒退”，丢弃这一整个 UDP 包
+                    self.logger.warning(
+                        f"硬件时间戳倒退，丢弃当前UDP包: 当前 {current_hw_ts:.6f}s, 上一次 {self._last_hw_timestamp:.6f}s"
+                    )
+                    continue
+
+                # 正常情况：更新时间戳
+                self._last_hw_timestamp = current_hw_ts
+                # ------- 新增逻辑结束 -------
 
                 for packet in packets:
                     # 第一个数据包建立时间同步
@@ -207,12 +231,6 @@ class UdpEegReceiver(QObject):
                     self.data_queue.put(packet)
                     self.data_received.emit(packet)
 
-                # 用于更新“当前运行情况”的简要报告
-                current_time = time.time()
-                if current_time - self.last_status_update > self.status_update_interval:
-                    self._update_status()
-                    self.last_status_update = current_time
-
             except socket.timeout:
                 continue
             except Exception as e:
@@ -227,7 +245,7 @@ class UdpEegReceiver(QObject):
         """
         packets: List[EegDataPacket] = []
 
-        if len(data) < 47:  # len(data) = 141个字节 = 47*3
+        if len(data) < 47:
             return packets
 
         # 前两个字节必须是 0xAD 0xAD
@@ -319,12 +337,6 @@ class UdpEegReceiver(QObject):
             self.logger.error(f"解析单通道数据帧失败: {e}")
             return None
 
-    def _update_status(self):
-        """更新状态信息（用于 tooltip 展示详细信息）"""
-        status = "已同步" if self.synced else "等待同步"  # 判断是否已完成时间同步
-        channel_info = f"通道: {sorted(list(self.active_channels))}" if self.active_channels else "通道: 无数据"
-        self.status_changed.emit(status, self.packet_count, channel_info)  # 通知 UI
-
     # ===== 辅助方法（可以先不用） =====
 
     def get_synchronized_timestamp(self, hardware_ts: float) -> float:
@@ -378,13 +390,21 @@ class Page2Widget(QtWidgets.QWidget):
     - 利用硬件时间戳估算“最近 3 秒窗口”的采样率（可选）
     - 通过下拉框选择通道数（3/4），通过 checkbox 动态控制每个通道是否显示
     - 新增走纸方式：1=滚动窗口，2=扫屏重写（带竖直指示线）
+    - 新增数据保存按钮：“开始保存数据” / “暂停保存数据，并落盘”
     """
 
     def __init__(self, parent=None):
         super(Page2Widget, self).__init__(parent)
 
+        self.data_dir = "data"
+        os.makedirs(self.data_dir, exist_ok=True)
+
+        # 传感器序列号（默认值 000003，真正的值在收到第一帧数据后解析）
+        self.sensor_serial: str = "000003"
+        self._sensor_serial_parsed: bool = False
+
         self.last_plot_time = 0.0
-        self.plot_interval = 1.0 / 30.0  # 最多 ~120 FPS
+        self.plot_interval = 1.0 / 30.0  # 最多 ~30 FPS
 
         # ====== 主布局 ======
         self.main_layout = QtWidgets.QVBoxLayout(self)
@@ -392,35 +412,9 @@ class Page2Widget(QtWidgets.QWidget):
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(4)
 
-        # ===================== 顶部一行：IP / 端口 / 采样率 / 重置按钮 / 按钮+状态 =====================
-        self.layout_1 = QtWidgets.QHBoxLayout()
-        self.layout_1.setContentsMargins(20, 0, 20, 0)
-        self.layout_1.setSpacing(12)  # 各小组之间间距
+        # ===================== 顶部控件行：端口 -> 通道数 -> 显示通道 -> 计算采样率 -> 绘图降采样 -> 走纸方式 =====================
 
-        # ---------- 1) IP 小组 ----------
-        self.label_ip = QtWidgets.QLabel("监听IP：")
-        self.label_ip.setFixedWidth(60)
-        self.label_ip.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Fixed,
-            QtWidgets.QSizePolicy.Policy.Fixed,
-        )
-
-        self.input_ip = QtWidgets.QLineEdit()
-        self.input_ip.setFixedWidth(150)
-        self.input_ip.setPlaceholderText("例如 0.0.0.0")
-        self.input_ip.setText("0.0.0.0")
-        self.input_ip.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Fixed,
-            QtWidgets.QSizePolicy.Policy.Fixed,
-        )
-
-        ip_layout = QtWidgets.QHBoxLayout()
-        ip_layout.setContentsMargins(0, 0, 0, 0)
-        ip_layout.setSpacing(4)
-        ip_layout.addWidget(self.label_ip)
-        ip_layout.addWidget(self.input_ip)
-
-        # ---------- 2) 端口 小组 ----------
+        # ---------- 端口 小组 ----------
         self.label_port = QtWidgets.QLabel("端口：")
         self.label_port.setFixedWidth(40)
         self.label_port.setSizePolicy(
@@ -443,79 +437,7 @@ class Page2Widget(QtWidgets.QWidget):
         port_layout.addWidget(self.label_port)
         port_layout.addWidget(self.input_port)
 
-        # ---------- 3) 采样率 小组 ----------
-        self.label_fs = QtWidgets.QLabel("采样率(Hz)：")
-        self.label_fs.setFixedWidth(80)
-        self.label_fs.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Fixed,
-            QtWidgets.QSizePolicy.Policy.Fixed,
-        )
-
-        self.input_fs = QtWidgets.QLineEdit()
-        self.input_fs.setFixedWidth(80)
-        self.input_fs.setPlaceholderText("例如 1000")
-        self.input_fs.setText("1000")
-        self.input_fs.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Fixed,
-            QtWidgets.QSizePolicy.Policy.Fixed,
-        )
-
-        fs_layout = QtWidgets.QHBoxLayout()
-        fs_layout.setContentsMargins(0, 0, 0, 0)
-        fs_layout.setSpacing(4)
-        fs_layout.addWidget(self.label_fs)
-        fs_layout.addWidget(self.input_fs)
-
-        # ---------- 4) 重置 y 轴范围按钮 ----------
-        self.button_reset_y = QtWidgets.QPushButton("重置y轴范围")
-        self.button_reset_y.setFixedWidth(110)
-        self.button_reset_y.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Fixed,
-            QtWidgets.QSizePolicy.Policy.Fixed,
-        )
-        self.button_reset_y.clicked.connect(self.reset_y_axis_range)
-
-        # ---------- 5) 按钮 + 状态 小组 ----------
-        self.button_1 = QtWidgets.QPushButton(ButtonStates.start.value)
-        self.button_1.setFixedWidth(160)
-        self.button_1.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Fixed,
-            QtWidgets.QSizePolicy.Policy.Fixed,
-        )
-
-        self.label_1 = QtWidgets.QLabel(LabelStates.stopped.value)
-        self.label_1.setFixedWidth(360)
-        self.label_1.setSizePolicy(
-            QtWidgets.QSizePolicy.Policy.Fixed,
-            QtWidgets.QSizePolicy.Policy.Fixed,
-        )
-        self.label_1.setStyleSheet("color: #5d5d5d")
-
-        btn_status_layout = QtWidgets.QHBoxLayout()
-        btn_status_layout.setContentsMargins(0, 0, 0, 0)
-        btn_status_layout.setSpacing(4)
-        btn_status_layout.addWidget(self.button_1)
-        btn_status_layout.addWidget(self.label_1)
-
-        # ---------- 顶部行整体排布（左右拉伸，中间一条控件带） ----------
-        self.layout_1.addStretch()
-        self.layout_1.addLayout(ip_layout)
-        self.layout_1.addSpacing(12)
-        self.layout_1.addLayout(port_layout)
-        self.layout_1.addSpacing(12)
-        self.layout_1.addLayout(fs_layout)
-        self.layout_1.addSpacing(16)
-        self.layout_1.addWidget(self.button_reset_y)
-        self.layout_1.addSpacing(24)
-        self.layout_1.addLayout(btn_status_layout)
-        self.layout_1.addStretch()
-
-        # ===================== 第二行：通道数选择 + checkbox + 采样率估计 + 走纸方式 =====================
-        self.channel_control_layout = QtWidgets.QHBoxLayout()
-        self.channel_control_layout.setContentsMargins(20, 0, 20, 0)
-        self.channel_control_layout.setSpacing(12)
-
-        # 通道数下拉框
+        # ---------- 通道数 小组 ----------
         self.label_channel_count = QtWidgets.QLabel("通道数：")
         self.label_channel_count.setFixedWidth(60)
         self.combo_channel_count = QtWidgets.QComboBox()
@@ -529,7 +451,7 @@ class Page2Widget(QtWidgets.QWidget):
         channel_count_layout.addWidget(self.label_channel_count)
         channel_count_layout.addWidget(self.combo_channel_count)
 
-        # 显示通道标签
+        # ---------- 显示通道（checkbox 区域） ----------
         self.label_show_channels = QtWidgets.QLabel("显示通道：")
 
         # checkbox 容器 layout
@@ -540,26 +462,36 @@ class Page2Widget(QtWidgets.QWidget):
         # 存储 checkbox 的字典
         self.channel_checkboxes: dict[int, QtWidgets.QCheckBox] = {}
 
-        # ===== 采样率估计控制 =====
+        show_channels_layout = QtWidgets.QHBoxLayout()
+        show_channels_layout.setContentsMargins(0, 0, 0, 0)
+        show_channels_layout.setSpacing(4)
+        show_channels_layout.addWidget(self.label_show_channels)
+        show_channels_layout.addLayout(self.channel_checkbox_layout)
+
+        # ---------- 采样率估计 & 绘图降采样 ----------
         self.checkbox_enable_fs_estimate = QtWidgets.QCheckBox("计算采样率")
-        # 默认不勾选
         self.checkbox_enable_fs_estimate.setChecked(False)
 
-        # 新增：绘图降采样 checkbox（只影响画图）
-        self.checkbox_downsample_plot = QtWidgets.QCheckBox("绘图降采样1/2")
+        self.checkbox_downsample_plot = QtWidgets.QCheckBox("绘图降采样1/5")
         self.checkbox_downsample_plot.setChecked(False)
 
-        # 采样率估计 Label（全局）
         self.label_fs_estimated = QtWidgets.QLabel("采样率估计：-- Hz")
         self.label_fs_estimated.setFixedWidth(160)
 
-        # ===== 走纸方式选择（与前面控件一条线居中） =====
+        fs_est_layout = QtWidgets.QHBoxLayout()
+        fs_est_layout.setContentsMargins(0, 0, 0, 0)
+        fs_est_layout.setSpacing(4)
+        fs_est_layout.addWidget(self.checkbox_enable_fs_estimate)
+        fs_est_layout.addWidget(self.label_fs_estimated)
+        fs_est_layout.addSpacing(8)
+        fs_est_layout.addWidget(self.checkbox_downsample_plot)
+
+        # ---------- 走纸方式 ----------
         self.label_scroll_mode = QtWidgets.QLabel("走纸方式：")
-        self.label_scroll_mode.setFixedWidth(60)
         self.combo_scroll_mode = QtWidgets.QComboBox()
         self.combo_scroll_mode.setFixedWidth(120)
-        self.combo_scroll_mode.addItem("滚动窗口", 1)   # 模式1：原来的最近5秒滚动方式
-        self.combo_scroll_mode.addItem("扫屏重写", 2)   # 模式2：x轴固定，从左到右写满后回到左侧
+        self.combo_scroll_mode.addItem("滚动窗口", 1)   # 模式1
+        self.combo_scroll_mode.addItem("扫屏重写", 2)   # 模式2
 
         scroll_mode_layout = QtWidgets.QHBoxLayout()
         scroll_mode_layout.setContentsMargins(0, 0, 0, 0)
@@ -567,36 +499,86 @@ class Page2Widget(QtWidgets.QWidget):
         scroll_mode_layout.addWidget(self.label_scroll_mode)
         scroll_mode_layout.addWidget(self.combo_scroll_mode)
 
-        # ---------- 第二行整体排布 ----------
-        self.channel_control_layout.addStretch()
-        self.channel_control_layout.addLayout(channel_count_layout)
-        self.channel_control_layout.addSpacing(16)
-        self.channel_control_layout.addWidget(self.label_show_channels)
-        self.channel_control_layout.addLayout(self.channel_checkbox_layout)
-        self.channel_control_layout.addSpacing(16)
-        self.channel_control_layout.addWidget(self.checkbox_enable_fs_estimate)
-        self.channel_control_layout.addWidget(self.label_fs_estimated)
-        self.channel_control_layout.addSpacing(8)
-        self.channel_control_layout.addWidget(self.checkbox_downsample_plot)
-        self.channel_control_layout.addSpacing(16)
-        self.channel_control_layout.addLayout(scroll_mode_layout)
-        self.channel_control_layout.addStretch()
+        # ---------- 顶部整行布局 ----------
+        self.top_controls_layout = QtWidgets.QHBoxLayout()
+        self.top_controls_layout.setContentsMargins(20, 0, 20, 0)
+        self.top_controls_layout.setSpacing(12)
 
-        # 连接通道数变化信号，并初始化
-        self.combo_channel_count.currentIndexChanged.connect(self.on_channel_count_changed)
-        self.on_channel_count_changed()
+        self.top_controls_layout.addStretch()
+        self.top_controls_layout.addLayout(port_layout)
+        self.top_controls_layout.addSpacing(16)
+        self.top_controls_layout.addLayout(channel_count_layout)
+        self.top_controls_layout.addSpacing(16)
+        self.top_controls_layout.addLayout(show_channels_layout)
+        self.top_controls_layout.addSpacing(16)
+        self.top_controls_layout.addLayout(fs_est_layout)
+        self.top_controls_layout.addSpacing(16)
+        self.top_controls_layout.addLayout(scroll_mode_layout)
+        self.top_controls_layout.addStretch()
 
-        # 走纸模式：1=当前滚动窗口，2=扫屏重写
-        # 默认模式改为 2（扫屏重写），并同步更新下拉框显示
-        self.scroll_mode = 2
-        self.combo_scroll_mode.setCurrentIndex(1)
-        self.combo_scroll_mode.currentIndexChanged.connect(self.on_scroll_mode_changed)
+        # ===================== 第二行：重置y轴范围、开始检测信号、开始保存数据 + 状态 =====================
 
-        # ===================== layout_2: pyqtgraph 曲线 =====================
-        self.max_points = 1000  # 初始默认值，真正的 maxlen 会在 start 的时候按采样率重建
-        self.sample_rate_hz: float | None = None  # 名义采样率（用户输入）
+        # 重置 y 轴范围按钮
+        self.button_reset_y = QtWidgets.QPushButton("重置y轴范围")
+        self.button_reset_y.setFixedWidth(110)
+        self.button_reset_y.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
 
-        # 窗口宽度（秒），两种模式统一使用
+        # 开始/停止检测信号按钮
+        self.button_1 = QtWidgets.QPushButton(ButtonStates.start.value)
+        self.button_1.setFixedWidth(160)
+        self.button_1.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+
+        # 开始保存数据按钮
+        self.button_save = QtWidgets.QPushButton("开始保存数据")
+        self.button_save.setFixedWidth(220)  # 按钮加长，防止文字被截断
+        self.button_save.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        # 初始不可用 + 灰色样式
+        self.button_save.setEnabled(False)
+        self.button_save.setStyleSheet(
+            "QPushButton:disabled {"
+            "background-color: #dcdcdc;"
+            "color: #888888;"
+            "}"
+        )
+
+        # 状态标签
+        self.label_1 = QtWidgets.QLabel(LabelStates.stopped.value)
+        self.label_1.setFixedWidth(360)
+        self.label_1.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
+        self.label_1.setStyleSheet("color: #5d5d5d")
+
+        self.bottom_controls_layout = QtWidgets.QHBoxLayout()
+        self.bottom_controls_layout.setContentsMargins(20, 0, 20, 0)
+        self.bottom_controls_layout.setSpacing(16)
+
+        self.bottom_controls_layout.addStretch()
+        self.bottom_controls_layout.addWidget(self.button_reset_y)
+        self.bottom_controls_layout.addSpacing(16)
+        self.bottom_controls_layout.addWidget(self.button_1)
+        self.bottom_controls_layout.addSpacing(16)
+        self.bottom_controls_layout.addWidget(self.label_1)
+        self.bottom_controls_layout.addSpacing(24)
+        self.bottom_controls_layout.addWidget(self.button_save)
+        self.bottom_controls_layout.addStretch()
+
+        # ===================== 曲线相关结构 =====================
+        self.max_points = 1000
+        self.sample_rate_hz: float | None = None
+        self.plot_downsample_step = 5   # 绘图降采样步长（1/5）
+
+        # 窗口宽度（秒）
         self.window_sec = 5.0
         self.window_points = 1000
         self.sweep_x: List[float] = [
@@ -604,7 +586,7 @@ class Page2Widget(QtWidgets.QWidget):
             for i in range(self.window_points)
         ]
 
-        # 多通道数据结构：每个通道有独立的 x/y 队列和 sample_index
+        # 多通道数据结构
         self.channel_data_x: dict[int, deque] = {}
         self.channel_data_y: dict[int, deque] = {}
         self.channel_sample_index: dict[int, int] = {}
@@ -612,32 +594,56 @@ class Page2Widget(QtWidgets.QWidget):
         self.active_channels_in_plot: set[int] = set()
         self.channel_colors = ["r", "g", "b", "c", "m", "y", "k"]
 
-        # 第二种模式用的“扫屏缓冲区”：固定长度数组 + 写入指针
+        # 扫屏模式 buffer
         self.sweep_buffers: dict[int, List[float]] = {}
         self.sweep_index: dict[int, int] = {}
 
-        # 采样率估计（全局）：使用一个参考通道 + 最近 3 秒窗口
-        self.reference_channel: Optional[int] = None     # 用来估计 fs 的通道
-        self.ref_window = deque()                        # 存放 (hw_ts, n_samples)，仅最近 ~3 秒
-        self.fs_estimated_global: float = 0.0            # 估算的实际采样率（当前 3 秒窗口）
+        # 采样率估计（全局）
+        self.reference_channel: Optional[int] = None
+        self.ref_window = deque()             # (hw_ts, n_samples)
+        self.fs_estimated_global: float = 0.0
 
         self.plot_widget = pg.PlotWidget()
         self.plot_widget.setBackground("w")
         self.plot_widget.showGrid(x=True, y=True, alpha=0.2)
         self.plot_widget.setLabel("left", "μV")
-        self.plot_widget.setLabel("bottom", "Time (s)")  # x轴单位改为秒
+        self.plot_widget.setLabel("bottom", "Time (s)")
         self.plot_widget.setYRange(-200, 200)
         self.legend = self.plot_widget.addLegend()
 
         # 扫屏模式下的竖直指示线
         self.sweep_line: Optional[pg.InfiniteLine] = None
 
-        # 主布局加入：顶部一行 + 通道控制行 + 曲线
-        self.main_layout.addLayout(self.layout_1)
-        self.main_layout.addLayout(self.channel_control_layout)
+        # 主布局加入：顶部控件行 + 按钮行 + 曲线
+        self.main_layout.addLayout(self.top_controls_layout)
+        self.main_layout.addLayout(self.bottom_controls_layout)
         self.main_layout.addWidget(self.plot_widget)
 
-        # 隐藏 IP 和“采样率(Hz)”这两个输入区域（仍然保留默认值供代码使用）
+        # 默认走纸模式：2 = 扫屏重写
+        self.scroll_mode = 2
+        self.combo_scroll_mode.setCurrentIndex(1)
+        self.combo_scroll_mode.currentIndexChanged.connect(self.on_scroll_mode_changed)
+
+        # 连接通道数变化信号，并初始化 checkbox
+        self.combo_channel_count.currentIndexChanged.connect(self.on_channel_count_changed)
+        self.on_channel_count_changed()
+
+        # ===== IP 和采样率输入控件（仅提供默认值，不参与布局） =====
+        self.label_ip = QtWidgets.QLabel("监听IP：")
+        self.label_ip.setFixedWidth(60)
+        self.input_ip = QtWidgets.QLineEdit()
+        self.input_ip.setFixedWidth(150)
+        self.input_ip.setPlaceholderText("例如 0.0.0.0")
+        self.input_ip.setText("0.0.0.0")
+
+        self.label_fs = QtWidgets.QLabel("采样率(Hz)：")
+        self.label_fs.setFixedWidth(80)
+        self.input_fs = QtWidgets.QLineEdit()
+        self.input_fs.setFixedWidth(80)
+        self.input_fs.setPlaceholderText("例如 1000")
+        self.input_fs.setText("1000")
+
+        # 隐藏 IP 和采样率输入控件（只用默认值）
         self.label_ip.hide()
         self.input_ip.hide()
         self.label_fs.hide()
@@ -645,14 +651,24 @@ class Page2Widget(QtWidgets.QWidget):
 
         # 信号与槽
         self.button_1.clicked.connect(self.start_udp_receiving)
+        self.button_reset_y.clicked.connect(self.reset_y_axis_range)
+        self.button_save.clicked.connect(self.toggle_save_data)
 
         # UDP 接收器
         self.receiver: Optional[UdpEegReceiver] = None
+        # 与硬件时间同步的偏移量（system_ts - hardware_ts），在 on_sync_established 中写入
+        self.sync_offset: Optional[float] = None
 
-    # -------- 工具：递归清空一个 layout（避免布局乱） --------
+        # ===== 保存数据相关 =====
+        self.is_saving: bool = False
+        self.channel_save_files: dict[int, object] = {}   # ch -> file
+        self.channel_save_index: dict[int, int] = {}      # ch -> sample index（仅做计数，不再用于计算时间轴）
+        self.marker_file: Optional[object] = None         # markers.csv 文件句柄
+
+    # -------- 工具：递归清空一个 layout --------
 
     def _clear_layout(self, layout: QtWidgets.QLayout):
-        """递归清空一个 QLayout，确保其中 widget 和子 layout 都正确销毁"""
+        """递归清空一个 QLayout"""
         while layout.count():
             item = layout.takeAt(0)
             widget = item.widget()
@@ -662,23 +678,42 @@ class Page2Widget(QtWidgets.QWidget):
             if child_layout is not None:
                 self._clear_layout(child_layout)
 
+    # -------- 根据数据帧解析传感器序列号 --------
+
+    def _parse_sensor_serial(self, frame_data: bytes) -> str:
+        """
+        根据数据帧解析传感器序列号。
+        具体哪几个字节表示序列号需要根据你的协议 / 图示来调整。
+        这里暂时示例为：使用第 2~4 字节作为 3 字节无符号整数，
+        再格式化为 6 位十进制字符串，例如 "000003"。
+        """
+        try:
+            if len(frame_data) < 5:
+                return "000000"
+
+            # 示例：假设 2~4 字节为序列号
+            raw = (frame_data[2] << 16) | (frame_data[3] << 8) | frame_data[4]
+            serial_int = raw & 0xFFFFFF
+            serial_str = f"{serial_int:06d}"
+            return serial_str
+        except Exception as e:
+            print("解析传感器序列号失败:", e)
+            return "000000"
+
     # -------- 通道数变化：更新 checkbox --------
 
     def on_channel_count_changed(self):
         """当下拉框选择通道数变化时，重新生成 checkbox"""
-        # 清空旧的 checkbox
         self._clear_layout(self.channel_checkbox_layout)
         self.channel_checkboxes.clear()
 
-        # 获取当前选择的通道数（3 或 4）
         count = self.combo_channel_count.currentData()
         if count is None:
             count = 3
 
-        # 假定通道编号从 0 开始：0,1,2 / 0,1,2,3
         for ch in range(count):
             cb = QtWidgets.QCheckBox(f"Ch{ch}")
-            cb.setChecked(True)  # 默认全选
+            cb.setChecked(True)
             self.channel_checkbox_layout.addWidget(cb)
             self.channel_checkboxes[ch] = cb
 
@@ -687,6 +722,7 @@ class Page2Widget(QtWidgets.QWidget):
         mode = self.combo_scroll_mode.currentData()
         if mode in (1, 2):
             self.scroll_mode = mode
+        # 竖直线显隐在 update_plot 内部控制，这里无需额外处理
 
     # -------- 启动 / 停止按钮逻辑 --------
 
@@ -698,7 +734,6 @@ class Page2Widget(QtWidgets.QWidget):
 
         # ====== 点击“开始检测信号” ======
         if self.button_1.text() == ButtonStates.start.value:
-            # 参数检查（IP 和采样率虽然隐藏，但使用默认值即可通过）
             if not ip or not port_str or not fs_str:
                 self.label_1.setText("请输入 IP、端口 和 采样率")
                 self.label_1.setStyleSheet("color: red")
@@ -719,14 +754,14 @@ class Page2Widget(QtWidgets.QWidget):
             port = int(port_str)
             self.sample_rate_hz = float(fs_str)
 
-            # 依据名义采样率估算窗口点数和缓冲长度
+            # 根据采样率估算窗口点数和缓冲长度
             points_for_5s = int(self.sample_rate_hz * self.window_sec)
             if points_for_5s <= 0:
                 points_for_5s = 1
             self.window_points = max(points_for_5s, 1000)
-            self.max_points = max(self.window_points * 2, 1000)  # deques 用更长一点的历史
+            self.max_points = max(self.window_points * 2, 1000)
 
-            # 更新扫屏模式的 X 轴坐标
+            # 更新扫屏模式 X 坐标
             if self.window_points > 1:
                 self.sweep_x = [
                     self.window_sec * i / (self.window_points - 1)
@@ -735,7 +770,7 @@ class Page2Widget(QtWidgets.QWidget):
             else:
                 self.sweep_x = [0.0]
 
-            # 清空旧数据（多通道）
+            # 清空旧数据
             self.channel_data_x.clear()
             self.channel_data_y.clear()
             self.channel_sample_index.clear()
@@ -743,15 +778,18 @@ class Page2Widget(QtWidgets.QWidget):
             self.active_channels_in_plot.clear()
             self.last_plot_time = 0.0
 
-            # 清空扫屏数据
             self.sweep_buffers.clear()
             self.sweep_index.clear()
 
-            # 重置采样率估计（当前 3 秒窗口）
+            # 重置采样率估计
             self.reference_channel = None
             self.ref_window.clear()
             self.fs_estimated_global = 0.0
             self.label_fs_estimated.setText("采样率估计：-- Hz")
+
+            # 重置传感器序列号解析标记
+            self.sensor_serial = "000003"
+            self._sensor_serial_parsed = False
 
             # 清空图像并重新设置轴和图例
             self.plot_widget.clear()
@@ -770,17 +808,16 @@ class Page2Widget(QtWidgets.QWidget):
                 pen=mkPen(color=(200, 0, 150), width=2, style=Qt.PenStyle.DashLine),
             )
             self.plot_widget.addItem(self.sweep_line)
-            # 只有在扫屏模式下显示
             self.sweep_line.setVisible(self.scroll_mode == 2)
 
-            # UI 状态：先禁用端口输入和通道数选择 + 走纸方式 + 采样率checkbox（开始后不能改）
+            # UI 状态：禁用一些控件
             self.input_ip.setDisabled(True)
             self.input_port.setDisabled(True)
             self.input_fs.setDisabled(True)
             self.combo_channel_count.setDisabled(True)
             self.combo_scroll_mode.setDisabled(True)
             self.checkbox_enable_fs_estimate.setDisabled(True)
-            # 注意：降采样 checkbox 不禁用，可以运行时自由切换
+            # 降采样 checkbox 保持可用
 
             # 如果之前有 receiver，先停掉
             if self.receiver is not None:
@@ -793,7 +830,6 @@ class Page2Widget(QtWidgets.QWidget):
 
             # 连接信号
             self.receiver.data_received.connect(self.on_eeg_packet)
-            self.receiver.status_changed.connect(self.on_receiver_status_changed)
             self.receiver.error_occurred.connect(self.on_error)
             self.receiver.sync_established.connect(self.on_sync_established)
 
@@ -801,7 +837,6 @@ class Page2Widget(QtWidgets.QWidget):
             try:
                 self.receiver.start()
             except Exception as e:
-                # 启动失败，恢复UI
                 self.label_1.setText(f"启动UDP接收器失败: {e}")
                 self.label_1.setStyleSheet("color: red")
                 self.input_ip.setDisabled(False)
@@ -820,12 +855,20 @@ class Page2Widget(QtWidgets.QWidget):
             self.label_1.setText(LabelStates.listening.value)
             self.label_1.setStyleSheet("color: #5d5d5d")
 
+            # 启动接收时，允许“开始保存数据”
+            self.stop_saving()
+            self.button_save.setEnabled(True)
+
         # ====== 点击“停止检测信号” ======
         elif self.button_1.text() == ButtonStates.stop.value:
             if self.receiver is not None:
                 self.receiver.stop()
                 self.receiver.deleteLater()
                 self.receiver = None
+
+            # 停止保存并禁用按钮
+            self.stop_saving()
+            self.button_save.setEnabled(False)
 
             # 恢复UI
             self.button_1.setText(ButtonStates.start.value)
@@ -837,29 +880,29 @@ class Page2Widget(QtWidgets.QWidget):
             self.combo_channel_count.setDisabled(False)
             self.combo_scroll_mode.setDisabled(False)
             self.checkbox_enable_fs_estimate.setDisabled(False)
-            # 降采样 checkbox 本来也没禁用，无需恢复
 
-    # -------- 接收 EEG 数据并更新曲线（多通道 + 3 秒窗口采样率估计 + checkbox 控制） --------
+    # -------- 接收 EEG 数据并更新曲线 + 保存 --------
 
     def on_eeg_packet(self, packet: EegDataPacket):
         """
         收到 UdpEegReceiver 解析好的 EegDataPacket
-        逻辑：
-          1. 对每一个通道分别维护 x/y 数据和 sample_index
-          2. 为每个通道创建独立的曲线（不同颜色）
-          3. 把所有被选中的通道的波形叠加在同一个 plot 上显示
-          4. 选一个参考通道，用“最近 3 秒的硬件时间戳窗口”估算采样率（只有在勾选 '计算采样率' 时才执行）
-          5. 根据 scroll_mode，切换两种走纸方式：
-             - 1：滚动窗口
-             - 2：扫屏重写（X 轴固定，并绘制竖直指示线）
         """
-        # 安全判断（理论上不会 None，因为开始前已经检查）
         if self.sample_rate_hz is None or self.sample_rate_hz <= 0:
             return
 
         ch = packet.channel
 
-        # 第一次看到这个通道 -> 初始化数据结构和曲线
+        # 第一次收到数据时，尝试从原始数据帧中解析传感器序列号
+        if (not self._sensor_serial_parsed) and packet.raw_packet:
+            self.sensor_serial = self._parse_sensor_serial(packet.raw_packet)
+            self._sensor_serial_parsed = True
+            print(f"数据来自传感器序列号: {self.sensor_serial}")
+
+        # 先保存数据
+        if self.is_saving:
+            self._save_packet_samples(packet)
+
+        # 初始化通道数据结构和曲线
         if ch not in self.channel_data_x:
             self.channel_data_x[ch] = deque(maxlen=self.max_points)
             self.channel_data_y[ch] = deque(maxlen=self.max_points)
@@ -869,9 +912,8 @@ class Page2Widget(QtWidgets.QWidget):
             curve = self.plot_widget.plot(pen=color, name=f"Ch {ch}")
             self.channel_curves[ch] = curve
 
-        # 扫屏模式下的缓冲区初始化
+        # 扫屏模式缓冲区初始化
         if ch not in self.sweep_buffers:
-            # 用 NaN 填充，未写过的位置不会画出有效波形
             self.sweep_buffers[ch] = [float("nan")] * self.window_points
             self.sweep_index[ch] = 0
 
@@ -883,45 +925,54 @@ class Page2Widget(QtWidgets.QWidget):
             self.reference_channel = ch
             self.ref_window.clear()
 
-        # -------- 1) 根据模式，把样本写入相应的数据结构 --------
+        # -------- 1) 按模式写入数据（用于绘图） --------
         if self.scroll_mode == 1:
-            # 模式1：滚动窗口（沿时间轴往前推进，显示最近 window_sec 秒）
-            for v in packet.data:
-                self.channel_sample_index[ch] += 1
-                t_sec = self.channel_sample_index[ch] / self.sample_rate_hz
-                self.channel_data_x[ch].append(t_sec)
+            # 滚动窗口：使用片上时间作为 X 轴（秒）
+            dt_s = 1.0 / self.sample_rate_hz if self.sample_rate_hz and self.sample_rate_hz > 0 else 0.0
+            samples = packet.data
+            n = len(samples)
+            if n == 0:
+                return
+
+            hw_ts = packet.hardware_timestamp  # 该包最后一个采样点的片上时间（秒）
+
+            if dt_s > 0:
+                # 第 j 个点的时间：t_j = hw_ts - (n - 1 - j) * dt
+                t_first = hw_ts - (n - 1) * dt_s
+            else:
+                # 兜底：没有有效采样率时，所有点使用同一个时间
+                t_first = hw_ts
+
+            for j, v in enumerate(samples):
+                self.channel_sample_index[ch] += 1  # 仍然累积样本计数，仅用于统计
+                t_s = t_first + j * dt_s
+                self.channel_data_x[ch].append(t_s)
                 self.channel_data_y[ch].append(v)
         else:
-            # 模式2：扫屏重写（X 轴固定，从左到右写满后从左重新写）
+            # 扫屏重写
             if self.window_points <= 0:
                 return
             idx = self.sweep_index[ch]
             for v in packet.data:
-                # 写入当前采样值到扫屏缓冲区
                 self.sweep_buffers[ch][idx] = v
-                # 递增写指针并绕回
                 idx += 1
                 if idx >= self.window_points:
                     idx = 0
-                # 仍然维护全局 sample_index，用于采样率估计
                 self.channel_sample_index[ch] += 1
             self.sweep_index[ch] = idx
 
-        # -------- 2) 采样率估计：与模式无关，基于参考通道硬件时间戳（仅在 checkbox 勾选时计算） --------
+        # -------- 2) 采样率估计（仅参考通道 + 勾选时） --------
         if self.checkbox_enable_fs_estimate.isChecked() and self.reference_channel == ch:
             ts_now = packet.hardware_timestamp
             n_new = len(packet.data)
 
-            # 把当前包加入窗口
             self.ref_window.append((ts_now, n_new))
 
-            # 移除 3 秒之前的旧数据，只保留 (ts >= ts_now - 3.0)
             window_len = 3.0
             window_start = ts_now - window_len
             while self.ref_window and self.ref_window[0][0] < window_start:
                 self.ref_window.popleft()
 
-            # 计算窗口内的样本总数和时间跨度
             if self.ref_window:
                 total_samples = sum(n for (_, n) in self.ref_window)
                 oldest_ts = self.ref_window[0][0]
@@ -931,7 +982,7 @@ class Page2Widget(QtWidgets.QWidget):
                     self.fs_estimated_global = total_samples / elapsed
                     self.label_fs_estimated.setText(f"采样率估计：{self.fs_estimated_global:.1f} Hz")
 
-        # 计算当前“显示中的通道”（勾选的那些）
+        # 当前显示通道列表
         channels_sorted = sorted(self.active_channels_in_plot)
         visible_channels = []
         for c in channels_sorted:
@@ -943,7 +994,7 @@ class Page2Widget(QtWidgets.QWidget):
         self.label_1.setText(
             f"{LabelStates.receiving.value} 当前显示通道: {visible_channels}"
         )
-        self.label_1.setStyleSheet("color: #008000")  # 绿色高亮
+        self.label_1.setStyleSheet("color: #008000")
 
         # 刷新曲线（限频）
         now = time.time()
@@ -951,16 +1002,144 @@ class Page2Widget(QtWidgets.QWidget):
             self.update_plot()
             self.last_plot_time = now
 
-    def on_receiver_status_changed(self, status: str, packet_count: int, channel_info: str):
+    # -------- 保存按钮逻辑 --------
+
+    def toggle_save_data(self):
+        """点击“开始保存数据” / “暂停保存数据，并落盘”"""
+        if not self.is_saving:
+            self.start_saving()
+        else:
+            self.stop_saving()
+
+    def start_saving(self):
+        """开始保存数据：创建 CSV 文件和 markers.csv"""
+        if self.is_saving:
+            return
+
+        # 必须已经开启 UDP 监听（Page2 中点击过“开始检测信号”）
+        if not self.is_listening():
+            self.label_1.setText("请先点击“开始检测信号”再启动数据保存")
+            self.label_1.setStyleSheet("color: red")
+            return
+
+        if self.sample_rate_hz is None or self.sample_rate_hz <= 0:
+            self.label_1.setText("采样率无效，无法开始保存数据")
+            self.label_1.setStyleSheet("color: red")
+            return
+
+        self.is_saving = True
+        self.channel_save_files.clear()
+        self.channel_save_index.clear()
+
+        # 创建 markers.csv，并写入表头（放到 data 目录下）
+        try:
+            marker_path = os.path.join(self.data_dir, "markers.csv")
+            self.marker_file = open(marker_path, "w", encoding="utf-8", newline="")
+            self.marker_file.write("Time,marker_index\n")
+        except Exception as e:
+            print("创建 markers.csv 失败:", e)
+            self.marker_file = None
+
+        self.button_save.setText("暂停保存数据，并落盘")
+
+    def stop_saving(self):
+        """停止保存数据，关闭所有文件"""
+        if not self.is_saving:
+            return
+
+        # 关闭每个通道的 CSV 文件
+        for f in self.channel_save_files.values():
+            try:
+                f.close()
+            except Exception:
+                pass
+        self.channel_save_files.clear()
+        self.channel_save_index.clear()
+
+        # 关闭 markers.csv
+        if self.marker_file is not None:
+            try:
+                self.marker_file.close()
+            except Exception:
+                pass
+            self.marker_file = None
+
+        self.is_saving = False
+        self.button_save.setText("开始保存数据")
+
+    def _save_packet_samples(self, packet: EegDataPacket):
         """
-        UdpEegReceiver 的状态信息（是否同步、包数、活跃通道）
-        放在 label 的 tooltip 里，避免抢占主文案。
-        同时附上“最近 3 秒窗口”的采样率估计。
+        将一个 EegDataPacket 中的每个采样点写入对应通道的 CSV，
+        并在 markers.csv 中写入时间和 marker_index（目前全为0）。
+
+        时间轴与片上时间的关系：
+        - packet.hardware_timestamp 来自硬件（单位：秒），同一个 UDP 包内所有通道一致
+        - 假设它表示“该包最后一个采样点”的时间
+        - 已知采样率 fs，则 dt = 1/fs
+        - 若包内有 N 个点，则：
+            第 j 个采样点（j 从 0 开始）的时间为：
+                t_j = hardware_timestamp - (N - 1 - j) * dt
+
+        CSV 中的 Time 列直接使用 t_j（单位：秒），
+        这样就可以和你打印出来的 8.23274 / 8.242737 / 8.252734 等片上时间对齐。
         """
-        tooltip = f"{status} | 已接收 {packet_count} 包 | {channel_info}"
-        if self.fs_estimated_global > 0 and self.checkbox_enable_fs_estimate.isChecked():
-            tooltip += f" | 采样率估计: {self.fs_estimated_global:.1f} Hz"
-        self.label_1.setToolTip(tooltip)
+        ch = packet.channel
+
+        # 初始化该通道的 CSV 文件
+        if ch not in self.channel_save_files:
+            serial_str = getattr(self, "sensor_serial", "xxxxxx")
+            filename = os.path.join(self.data_dir, f"EEG_{serial_str}_{ch:02d}.csv")
+            try:
+                f = open(filename, "w", encoding="utf-8", newline="")
+                f.write("Time,Response\n")
+                self.channel_save_files[ch] = f
+                self.channel_save_index[ch] = 0  # 现在只做计数，不参与时间计算
+            except Exception as e:
+                print(f"打开通道 {ch} 的 CSV 文件失败:", e)
+                return
+
+        f = self.channel_save_files[ch]
+
+        # 采样间隔 dt
+        if self.sample_rate_hz and self.sample_rate_hz > 0:
+            dt_s = 1.0 / self.sample_rate_hz
+        else:
+            dt_s = 0.0  # 理论上不会走到，因为前面已经校验过 fs
+
+        samples = packet.data
+        n = len(samples)
+        if n == 0:
+            return
+
+        hw_ts = packet.hardware_timestamp  # 该包的片上时间（秒）
+
+        # 假设 hardware_timestamp 是“最后一个采样点”的时间
+        if dt_s > 0:
+            t_first = hw_ts - (n - 1) * dt_s
+        else:
+            # 兜底：没有有效采样率时，就全部写成同一个时间戳
+            t_first = hw_ts
+
+        idx = self.channel_save_index.get(ch, 0)
+
+        for j, v in enumerate(samples):
+            # 第 j 个采样点的时间
+            t_s = t_first + j * dt_s
+
+            # EEG 通道 CSV：Time,Response
+            # 使用 6 位小数，保留微秒级别的精度
+            f.write(f"{t_s:.6f},{v:.6f}\n")
+
+            # markers.csv：Time,marker_index（目前 marker_index 全为0）
+            if ch == 0 and self.marker_file is not None:
+                self.marker_file.write(f"{t_s:.6f},0\n")
+
+            idx += 1
+
+        # 更新该通道已经写出的样本数
+        self.channel_save_index[ch] = idx
+
+    # -------- 其他 UI 回调 --------
 
     def on_error(self, message: str):
         print("UDP 错误:", message)
@@ -970,11 +1149,50 @@ class Page2Widget(QtWidgets.QWidget):
     def on_sync_established(self, offset: float):
         """
         时间同步建立时调用。
-        现在只是添加到 tooltip，如果之后要用同步时间戳，可以从 receiver 获取。
+        不再使用 tooltip，仅打印到控制台。
         """
-        current_tooltip = self.label_1.toolTip() or ""
-        extra = f" | 时间同步偏移量: {offset:.6f}s"
-        self.label_1.setToolTip(current_tooltip + extra)
+        self.sync_offset = offset
+        print(f"时间同步偏移量: {offset:.6f}s")
+
+    # -------- 提供给其他页面（如范式页）的辅助方法 --------
+
+    def is_listening(self) -> bool:
+        """
+        返回当前是否已经开启 UDP 监听：
+        - True  表示 UdpEegReceiver 已经启动（处于 listening / receiving 状态）
+        - False 表示尚未启动或已经停止
+        """
+        if self.receiver is None:
+            return False
+        if hasattr(self.receiver, "is_running"):
+            try:
+                return self.receiver.is_running()
+            except Exception:
+                return False
+        return self.receiver.running
+
+    def get_last_hardware_timestamp(self) -> Optional[float]:
+        """
+        获取最近一次接收到的数据包的片上时间戳（秒）。
+        若尚未收到任何数据或未启动接收，则返回 None。
+        """
+        if self.receiver is None:
+            return None
+        if hasattr(self.receiver, "get_last_hw_timestamp"):
+            try:
+                return self.receiver.get_last_hw_timestamp()
+            except Exception:
+                return None
+        return getattr(self.receiver, "_last_hw_timestamp", None)
+
+    def convert_system_time_to_hw(self, system_ts: float) -> Optional[float]:
+        """
+        将本机 system_ts（time.time()）转换为片上时间。
+        需要已经完成一次时间同步（sync_offset 不为 None）。
+        """
+        if self.sync_offset is None:
+            return None
+        return system_ts - self.sync_offset
 
     # -------- 重置 y 轴范围 --------
 
@@ -987,18 +1205,17 @@ class Page2Widget(QtWidgets.QWidget):
     def update_plot(self):
         """
         更新曲线显示：
-        - 模式1：X轴为秒，固定 window_sec 秒窗口，所有“勾选”的通道叠加显示
+        - 模式1：X轴为片上时间（秒），固定 window_sec 秒窗口，所有勾选通道叠加显示
         - 模式2：X轴固定为 [0, window_sec]，扫屏缓冲区按固定 X 坐标绘制，并显示竖直指示线
-        - 若勾选“绘图降采样1/2”，则在画图时对 X/Y 进行 ::2 降采样，只展示一半采样点
+        - 勾选“绘图降采样1/2”时，对 X/Y 使用 ::2 降采样
         """
         if not self.channel_curves:
             return
 
         downsample = self.checkbox_downsample_plot.isChecked()
 
-        # 模式1：滚动窗口
+        # 模式1：滚动窗口（使用片上时间）
         if self.scroll_mode == 1:
-            # 竖线隐藏
             if self.sweep_line is not None:
                 self.sweep_line.setVisible(False)
 
@@ -1010,7 +1227,6 @@ class Page2Widget(QtWidgets.QWidget):
                 if not x_deque or not y_deque:
                     continue
 
-                # 根据 checkbox 决定是否显示
                 cb = self.channel_checkboxes.get(ch)
                 if cb is not None and not cb.isChecked():
                     curve.setVisible(False)
@@ -1021,10 +1237,10 @@ class Page2Widget(QtWidgets.QWidget):
                 x_data = list(x_deque)
                 y_data = list(y_deque)
 
-                # 可选：1/2 降采样
                 if downsample and len(x_data) > 1:
-                    x_plot = x_data[::2]
-                    y_plot = y_data[::2]
+                    step = self.plot_downsample_step
+                    x_plot = x_data[::step]
+                    y_plot = y_data[::step]
                 else:
                     x_plot = x_data
                     y_plot = y_data
@@ -1039,7 +1255,6 @@ class Page2Widget(QtWidgets.QWidget):
             if x_max is None:
                 return
 
-            # 固定显示最近 window_sec 秒
             window = self.window_sec
             if x_max <= window:
                 self.plot_widget.setXRange(0, window)
@@ -1047,7 +1262,7 @@ class Page2Widget(QtWidgets.QWidget):
                 self.plot_widget.setXRange(x_max - window, x_max)
 
         else:
-            # 模式2：扫屏重写，X轴固定
+            # 模式2：扫屏重写
             self.plot_widget.setXRange(0, self.window_sec)
 
             for ch, curve in self.channel_curves.items():
@@ -1055,7 +1270,6 @@ class Page2Widget(QtWidgets.QWidget):
                 if buf is None or len(buf) == 0:
                     continue
 
-                # 根据 checkbox 决定是否显示
                 cb = self.channel_checkboxes.get(ch)
                 if cb is not None and not cb.isChecked():
                     curve.setVisible(False)
@@ -1063,10 +1277,10 @@ class Page2Widget(QtWidgets.QWidget):
                 else:
                     curve.setVisible(True)
 
-                # 直接用固定的 X 坐标和当前缓冲区的 Y
                 if downsample and len(buf) > 1:
-                    x_plot = self.sweep_x[::2]
-                    y_plot = buf[::2]
+                    step = self.plot_downsample_step
+                    x_plot = self.sweep_x[::step]
+                    y_plot = buf[::step]
                 else:
                     x_plot = self.sweep_x
                     y_plot = buf
@@ -1076,17 +1290,14 @@ class Page2Widget(QtWidgets.QWidget):
             # 更新竖直指示线位置
             if self.sweep_line is not None:
                 self.sweep_line.setVisible(True)
-                # 优先使用参考通道的写入指针
                 idx = None
                 if self.reference_channel is not None and self.reference_channel in self.sweep_index:
                     idx = self.sweep_index[self.reference_channel]
                 else:
-                    # 退而求其次：取任意一个可见通道的 index
                     if self.sweep_index:
                         idx = list(self.sweep_index.values())[0]
 
                 if idx is not None and self.window_points > 0:
-                    # 指示“最后写入”的位置：指针指向的是下一次写入的位置，所以往前挪一格
                     last_idx = (idx - 1) % self.window_points
                     if 0 <= last_idx < len(self.sweep_x):
                         x_pos = self.sweep_x[last_idx]
@@ -1100,6 +1311,10 @@ class Page2Widget(QtWidgets.QWidget):
             self.receiver.stop()
             self.receiver.deleteLater()
             self.receiver = None
+
+        if self.is_saving:
+            self.stop_saving()
+
         event.accept()
 
 
