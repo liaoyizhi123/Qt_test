@@ -46,47 +46,113 @@ QPushButton[spread="true"] {
 /* ================= 左侧导航栏按钮（通过属性控制） ================= */
 
 #left_center QPushButton[nav="true"] {
-    border: none;
     background-color:#00000000;  /* 默认透明背景 */
     color: transparent;          /* 文本透明，只显示图标 */
     min-height: 50px;
     max-height: 50px;
-    padding: 0px;
-    margin: 0px;
+    padding: 0px 8px;
+    margin: 6px 10px 6px 6px;
+    border-radius: 10px;         /* 四边圆角 */
+    border: 1px solid #d0d0d0;   /* 灰色细边框 */
 }
 
+/* 普通 nav 按钮 hover 效果 */
 #left_center QPushButton[nav="true"]:hover {
-    background-color: #ececec;
+    background-color: #f0f0f0;
 }
 
+/* 选中状态 nav 按钮（不 hover） */
 #left_center QPushButton[nav="true"][selected="true"] {
     background-color: #eaeaea;
-    border: none;
+    border: 1px solid #4CAF50;   /* 选中时边框加一点颜色 */
 }
 
-/******************************************************page1******************************************************/
+/* 选中状态 + hover：比普通选中再稍微深一点 */
+#left_center QPushButton[nav="true"][selected="true"]:hover {
+    background-color: #dcdcdc;
+}
+
+/****************************************************** 主内容区（stackedWidget 内部控件样式） ******************************************************/
+
+/* 按钮：统一成和左侧导航类似的卡片风格 */
 #stackedWidget QPushButton {
-    background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1, stop:0 #4CAF50, stop:1 #81C784);
-    color: white;
-/*    border-radius: 4px;*/
-    padding: 5px 5px;
+    background-color: #ffffff;           /* 白底 */
+    color: #333333;                      /* 深灰文字 */
+    border-radius: 10px;                 /* 圆角 */
+    border: 1px solid #d0d0d0;           /* 浅灰边框 */
+    padding: 6px 12px;                   /* 内边距 */
     font-size: 14px;
-    font-weight: bold;
-/*    border: 1px solid #4CAF50;*/
+    font-weight: normal;
 }
 
+/* 鼠标悬停效果 */
 #stackedWidget QPushButton:hover {
-    background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:1, stop:0 #66BB6A, stop:1 #A5D6A7);
+    background-color: #f5f5f5;           /* 稍微变浅一点 */
 }
 
+/* 按下效果 */
 #stackedWidget QPushButton:pressed {
-    background-color: #388E3C;
-/*    border: 1px solid #388E3C;*/
+    background-color: #e0e0e0;
 }
+
+/* Label：去掉绿色大边框，改成轻量卡片样式（和按钮统一） */
+#stackedWidget QLabel{
+    background-color: #ffffff;
+    color: #333333;
+    border: 1px solid #e0e0e0;           /* 比按钮更淡一点的边框 */
+    border-radius: 8px;
+    padding: 4px 8px;                    /* 轻微内边距 */
+}
+
+/* 如果有某些 Label 不想要边框，可以后面用 id 单独覆盖，比如：
+   QLabel#proj_title { border: none; background-color:#00000000; }
+*/
+
+/* 下拉框整体 */
+#stackedWidget QComboBox {
+    background-color: #ffffff;
+    color: #333333;
+    border-radius: 10px;
+    border: 1px solid #d0d0d0;
+    padding: 4px 30px 4px 10px;  /* 右边给箭头预留空间 */
+    min-height: 26px;
+}
+
+#stackedWidget QComboBox:hover {
+    border: 1px solid #4CAF50;
+}
+
+/* 右侧箭头区域 */
+#stackedWidget QComboBox::drop-down {
+    subcontrol-origin: padding;
+    subcontrol-position: right center;
+    width: 24px;
+    border-left: 1px solid #d0d0d0;
+    border-top-right-radius: 10px;
+    border-bottom-right-radius: 10px;
+    background-color: #f5f5f5;
+}
+
+#stackedWidget QComboBox::down-arrow {
+    margin-right: 6px;  /* 箭头稍微离右边远一点 */
+}
+
+/* 下拉列表 */
+#stackedWidget QComboBox QAbstractItemView {
+    background-color: #ffffff;
+    color: #333333;
+    border-radius: 8px;
+    border: 1px solid #d0d0d0;
+    padding: 2px 0;
+    selection-background-color: #4CAF50;
+    selection-color: #ffffff;
+}
+
+/******************************************************page1 之前的写法（保留 QLineEdit 逻辑，去掉旧的丑按钮/Label）******************************************************/
 
 #stackedWidget QLineEdit {
     background-color: #ECEFF1; /* 浅灰色背景 */
-    color: #333333; /* 深色文字 */
+    color: #333333;            /* 深色文字 */
     padding: 5px 5px;
     border: 1px solid #B0BEC5; /* 浅灰色边框 */
 /*    border-radius: 6px; */
@@ -96,21 +162,16 @@ QPushButton[spread="true"] {
 #stackedWidget QLineEdit:focus {
     background-color: #FFFFFF; /* 获得焦点时背景变白 */
     border: 1px solid #90A4AE; /* 聚焦时边框变深 */
-    outline: none; /* 去除默认的聚焦轮廓 */
+    outline: none;             /* 去除默认的聚焦轮廓 */
 }
 
-#stackedWidget QLabel{
-    border: 1px solid #4CAF50;
-/*  border-radius: 4px; *//* 圆角边框 */
-    padding: 5px;  /* 内边距 */
-}
+/****************************************************** 其它整体结构 ******************************************************/
 
 #top_frame{ /*顶边栏*/
     background-color: #f9f9f9;
-    border-bottom: 1px solid #d0d0d0;  /* ⭐ 新增：底部分隔线 */
+    border-bottom: 1px solid #d0d0d0;  /* ⭐ 底部分隔线 */
 }
 
 #main_content {
     background-color: #ffffff;  /* 主内容区域右侧整体为白色 */
 }
-/******************************************************page1******************************************************/

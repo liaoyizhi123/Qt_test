@@ -396,9 +396,11 @@ class Page2Widget(QtWidgets.QWidget):
     def __init__(self, parent=None):
         super(Page2Widget, self).__init__(parent)
 
+        # ========= 默认数据目录 =========
         self.default_data_dir = "data"
         self.data_dir = self.default_data_dir
         os.makedirs(self.data_dir, exist_ok=True)
+        # ==============================
 
         # 传感器序列号（默认值 000003，真正的值在收到第一帧数据后解析）
         self.sensor_serial: str = "000003"
@@ -417,11 +419,12 @@ class Page2Widget(QtWidgets.QWidget):
 
         # ---------- 端口 小组 ----------
         self.label_port = QtWidgets.QLabel("端口：")
-        self.label_port.setFixedWidth(40)
+        # self.label_port.setFixedWidth(40)
         self.label_port.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Fixed,
             QtWidgets.QSizePolicy.Policy.Fixed,
         )
+        self.label_port.setFixedHeight(28)   # ⭐ 统一高度
 
         self.input_port = QtWidgets.QLineEdit()
         self.input_port.setFixedWidth(80)
@@ -441,6 +444,8 @@ class Page2Widget(QtWidgets.QWidget):
         # ---------- 通道数 小组 ----------
         self.label_channel_count = QtWidgets.QLabel("通道数：")
         self.label_channel_count.setFixedWidth(60)
+        self.label_channel_count.setFixedHeight(28)  # ⭐ 统一高度
+
         self.combo_channel_count = QtWidgets.QComboBox()
         self.combo_channel_count.setFixedWidth(80)
         self.combo_channel_count.addItem("3", 3)
@@ -454,6 +459,7 @@ class Page2Widget(QtWidgets.QWidget):
 
         # ---------- 显示通道（checkbox 区域） ----------
         self.label_show_channels = QtWidgets.QLabel("显示通道：")
+        self.label_show_channels.setFixedHeight(28)  # ⭐ 统一高度
 
         # checkbox 容器 layout
         self.channel_checkbox_layout = QtWidgets.QHBoxLayout()
@@ -478,6 +484,7 @@ class Page2Widget(QtWidgets.QWidget):
 
         self.label_fs_estimated = QtWidgets.QLabel("采样率估计：-- Hz")
         self.label_fs_estimated.setFixedWidth(160)
+        self.label_fs_estimated.setFixedHeight(28)  # ⭐ 统一高度
 
         fs_est_layout = QtWidgets.QHBoxLayout()
         fs_est_layout.setContentsMargins(0, 0, 0, 0)
@@ -489,6 +496,8 @@ class Page2Widget(QtWidgets.QWidget):
 
         # ---------- 走纸方式 ----------
         self.label_scroll_mode = QtWidgets.QLabel("走纸方式：")
+        self.label_scroll_mode.setFixedHeight(28)  # ⭐ 统一高度
+
         self.combo_scroll_mode = QtWidgets.QComboBox()
         self.combo_scroll_mode.setFixedWidth(120)
         self.combo_scroll_mode.addItem("滚动窗口", 1)   # 模式1
@@ -554,6 +563,7 @@ class Page2Widget(QtWidgets.QWidget):
         # 状态标签
         self.label_1 = QtWidgets.QLabel(LabelStates.stopped.value)
         self.label_1.setFixedWidth(360)
+        self.label_1.setFixedHeight(28)  # ⭐ 底部状态 label 同样统一高度
         self.label_1.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Fixed,
             QtWidgets.QSizePolicy.Policy.Fixed,
