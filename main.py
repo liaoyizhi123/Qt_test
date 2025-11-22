@@ -4,14 +4,14 @@ from PyQt6 import QtCore, QtGui, QtWidgets
 from PyQt6.QtWidgets import QApplication, QMainWindow
 
 from page1 import Page1Widget
-from page2 import Page2Widget
+from page2_data_collection import Page2Widget
 from page3 import Page3Widget
-from page4 import Page4Widget
-from page5 import Page5Widget
-from page6 import Page6Widget
-from page7 import Page7Widget
-from page8 import Page8Widget
-from page9 import Page9Widget  # FIXME.
+from page4_nback import Page4Widget
+from page5_stroop import Page5Widget
+from page6_ma import Page6Widget
+from page7_mill import Page7Widget
+from page8_miul import Page8Widget
+from page9_eye import Page9Widget  # FIXME.
 
 
 class Ui_MainWindow(QMainWindow):

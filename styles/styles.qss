@@ -62,14 +62,7 @@ QPushButton[spread="true"] {
 #left_center QPushButton[nav="true"][selected="true"] {
     background-color: #eaeaea;
     border: none;
-    border-left: 3px solid qlineargradient(
-        spread:pad,
-        x1:0,   y1:0.523,
-        x2:0.971, y2:0.528682,
-        stop:0.0511364 rgba(0, 255, 0, 255),
-        stop:0.511364 rgba(0, 208, 0, 255),
-        stop:0.988636 rgba(0, 179, 0, 255)
-    ); /* 左侧的边框单独显示为渐变色 */
+    border-left: 0px solid transparent;
 }
 
 /******************************************************page1******************************************************/
