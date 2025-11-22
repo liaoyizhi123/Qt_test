@@ -62,7 +62,6 @@ QPushButton[spread="true"] {
 #left_center QPushButton[nav="true"][selected="true"] {
     background-color: #eaeaea;
     border: none;
-    border-left: 0px solid transparent;
 }
 
 /******************************************************page1******************************************************/
