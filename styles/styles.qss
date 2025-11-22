@@ -149,7 +149,9 @@ QPushButton[spread="true"] {
 }
 
 /******************************************************page1 之前的写法（保留 QLineEdit 逻辑，去掉旧的丑按钮/Label）******************************************************/
-
+QLineEdit {
+    border-radius: 10px;
+}
 #stackedWidget QLineEdit {
     background-color: #ECEFF1; /* 浅灰色背景 */
     color: #333333;            /* 深色文字 */
