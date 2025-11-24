@@ -22,6 +22,17 @@ OPERATIONS = ['+', '-']
 
 
 class Page6Widget(QWidget):
+    """
+    心算实验页面（Page6）
+
+    时间记录逻辑：
+      - 使用 Page2 提供的 get_last_eeg_time()，获取与 CSV Time 列一致的
+        “校准后的电脑时间轴”（秒）；
+      - 每个 loop 的开始/结束时间，记录在 loop_eeg_start / loop_eeg_end；
+      - save_report() 中每一行第 1、2 列就是该 loop 的开始/结束时间，
+        可直接在 CSV 中用 Time 范围切片。
+    """
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("心算实验")
@@ -44,7 +55,7 @@ class Page6Widget(QWidget):
         self.delay = 4.0  # 单个阶段时长（展示期 / 判断期）
         self.max_operand = 100
         self.initial_countdown = 10  # 实验开始前倒计时
-        self.rest_duration = 10  # 循环间休息倒计时
+        self.rest_duration = 10      # 循环间休息倒计时
         self.separate_phases = False  # 是否分离展示与判断
 
         # 状态变量
@@ -59,12 +70,12 @@ class Page6Widget(QWidget):
         # 与 EEG 采集页面（Page2）联动
         # 需要在主程序中设置：page6.eeg_page = page2
         self.eeg_page = None
-        # 整个实验的开始/结束片上时间（可选）
-        self.hw_exp_start = None
-        self.hw_exp_end = None
-        # 每个 loop 的开始/结束片上时间（写入 txt）
-        self.loop_hw_start = []
-        self.loop_hw_end = []
+        # 整个实验的开始/结束时间（与 CSV Time 使用同一“校准电脑时间”轴）
+        self.eeg_exp_start = None
+        self.eeg_exp_end = None
+        # 每个 loop 的开始/结束时间（写入 txt）
+        self.loop_eeg_start = []
+        self.loop_eeg_end = []
 
         # ===== 布局 =====
         root_layout = QVBoxLayout(self)
@@ -204,6 +215,50 @@ class Page6Widget(QWidget):
         self.shortcut_right.setContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
         self.shortcut_right.activated.connect(lambda: self.record_response(False))
 
+    # ============ 与 Page2 的时间交互 ============
+
+    def _get_eeg_time_from_page(self):
+        """
+        从 Page2 获取当前最新的 EEG 时间（秒），
+        使用的是与 CSV Time 列一致的“校准后的电脑时间轴”。
+        若未能获取则返回 None。
+        """
+        eeg_page = getattr(self, "eeg_page", None)
+        if eeg_page is None:
+            return None
+        getter = getattr(eeg_page, "get_last_eeg_time", None)
+        if getter is None:
+            return None
+        try:
+            return getter()
+        except Exception:
+            return None
+
+    def _record_loop_start_time(self, loop_index: int):
+        """
+        记录第 loop_index 个 loop 的开始时间（校准后的电脑时间）。
+        在 show_task() 中，当 current_index == 0 时调用。
+        """
+        t = self._get_eeg_time_from_page()
+        if t is None:
+            return
+        if 0 <= loop_index < self.loops:
+            self.loop_eeg_start[loop_index] = t
+            if self.eeg_exp_start is None:
+                self.eeg_exp_start = t
+
+    def _record_loop_end_time(self, loop_index: int):
+        """
+        记录第 loop_index 个 loop 的结束时间（校准后的电脑时间）。
+        在 end_loop() 中调用。
+        """
+        t = self._get_eeg_time_from_page()
+        if t is None:
+            return
+        if 0 <= loop_index < self.loops:
+            self.loop_eeg_end[loop_index] = t
+            self.eeg_exp_end = t
+
     # ============ 实验流程 ============
 
     def start_experiment(self):
@@ -231,7 +286,7 @@ class Page6Widget(QWidget):
             )
             return
 
-        # 2. 构建目录结构：data/calc/<name>/<timestamp>/
+        # 2. 构建目录结构：data/ma/<name>/<timestamp>/
         self.current_user_name = name
         self.user_dir = os.path.join(self.ma_root, self.current_user_name)
         os.makedirs(self.user_dir, exist_ok=True)
@@ -255,11 +310,11 @@ class Page6Widget(QWidget):
         self.response_recorded = False
         self.input_enabled = False
 
-        # 初始化时间记录
-        self.hw_exp_start = None
-        self.hw_exp_end = None
-        self.loop_hw_start = [None] * self.loops
-        self.loop_hw_end = [None] * self.loops
+        # 初始化时间记录（统一使用“校准后的电脑时间”）
+        self.eeg_exp_start = None
+        self.eeg_exp_end = None
+        self.loop_eeg_start = [None] * self.loops
+        self.loop_eeg_end = [None] * self.loops
 
         # ==== 关键：在“有效点击 Start Calculation”后立刻开始保存 EEG CSV ====
         if hasattr(eeg_page, "start_saving"):
@@ -270,10 +325,10 @@ class Page6Widget(QWidget):
                 # Page2 内部处理错误，这里不中断心算实验
                 pass
 
-        # 尝试记录实验整体起始片上时间
-        first_hw = self._get_hw_timestamp_from_eeg()
-        if first_hw is not None:
-            self.hw_exp_start = first_hw
+        # 尝试记录实验整体起始时间（校准后的 EEG 时间轴）
+        first_time = self._get_eeg_time_from_page()
+        if first_time is not None:
+            self.eeg_exp_start = first_time
 
         self.instruction_label.hide()
         self.name_input.parent().hide()
@@ -332,9 +387,9 @@ class Page6Widget(QWidget):
             self.end_loop()
             return
 
-        # 若是本轮的第一题，记录 loop 开始片上时间
+        # 若是本轮的第一题，记录 loop 开始时间（校准后的 EEG 时间）
         if self.current_index == 0:
-            self._record_loop_start_hw(self.current_loop - 1)
+            self._record_loop_start_time(self.current_loop - 1)
 
         # 重置当前 trial 状态
         self.response_recorded = False
@@ -406,7 +461,7 @@ class Page6Widget(QWidget):
         else:
             self.btn_false.setChecked(True)
 
-        is_correct = user_says_true == flag
+        is_correct = (user_says_true == flag)
         mark = "✔" if is_correct else "❌"
         color = "green" if is_correct else "red"
         self.feedback_label.setText(mark)
@@ -437,8 +492,8 @@ class Page6Widget(QWidget):
         self.show_task()
 
     def end_loop(self):
-        # 记录本轮结束时的片上时间
-        self._record_loop_end_hw(self.current_loop - 1)
+        # 记录本轮结束时的时间（校准后的 EEG 时间）
+        self._record_loop_end_time(self.current_loop - 1)
 
         self.task_label.hide()
         self.btn_container.hide()
@@ -476,9 +531,9 @@ class Page6Widget(QWidget):
             # ==== 整个实验结束：先停止 EEG 保存，再写 txt 报告 ====
             eeg_page = getattr(self, "eeg_page", None)
             if eeg_page is not None:
-                last_hw = self._get_hw_timestamp_from_eeg()
-                if last_hw is not None:
-                    self.hw_exp_end = last_hw
+                last_time = self._get_eeg_time_from_page()
+                if last_time is not None:
+                    self.eeg_exp_end = last_time
                 if hasattr(eeg_page, "stop_saving"):
                     try:
                         eeg_page.stop_saving()
@@ -488,48 +543,6 @@ class Page6Widget(QWidget):
             self.save_report()
             self.reset_ui()
 
-    # ========== 与 Page2（EEG 页面）的时间戳交互辅助函数 ==========
-
-    def _get_hw_timestamp_from_eeg(self):
-        """
-        从 Page2 获取当前最新的片上时间戳（秒），若失败则返回 None。
-        """
-        eeg_page = getattr(self, "eeg_page", None)
-        if eeg_page is None:
-            return None
-        getter = getattr(eeg_page, "get_last_hardware_timestamp", None)
-        if getter is None:
-            return None
-        try:
-            return getter()
-        except Exception:
-            return None
-
-    def _record_loop_start_hw(self, loop_index: int):
-        """
-        记录第 loop_index 个 loop 的开始片上时间。
-        在 show_task() 中，当 current_index == 0 时调用。
-        """
-        hw = self._get_hw_timestamp_from_eeg()
-        if hw is None:
-            return
-        if 0 <= loop_index < self.loops:
-            self.loop_hw_start[loop_index] = hw
-            if self.hw_exp_start is None:
-                self.hw_exp_start = hw
-
-    def _record_loop_end_hw(self, loop_index: int):
-        """
-        记录第 loop_index 个 loop 的结束片上时间。
-        在 end_loop() 中调用。
-        """
-        hw = self._get_hw_timestamp_from_eeg()
-        if hw is None:
-            return
-        if 0 <= loop_index < self.loops:
-            self.loop_hw_end[loop_index] = hw
-            self.hw_exp_end = hw
-
     # ========== 报告与复位 ==========
 
     def save_report(self):
@@ -537,17 +550,20 @@ class Page6Widget(QWidget):
         将本次心算实验写入 txt 报告。
 
         每一行格式：
-            loop_start_hw,loop_end_hw,mental_calc,rec_str,acc
+            loop_start_time,loop_end_time,mental_calc,rec_str,acc
 
         其中：
-          - loop_start_hw / loop_end_hw 为该 loop 的开始/结束片上时间（秒）；
+          - loop_start_time / loop_end_time 为该 loop 的开始/结束时间（秒），
+            使用的是与 CSV Time 列一致的“校准后的电脑时间轴”；
           - rec_str 形如：
               1+2=3TT|4-1=1FT|5+6=10FN ...
-            （最后的 T/F/N 表示被试作答是否正确 / 未作答）
+            其中：
+              第一个 T/F = 题目结果是否正确（ground truth）
+              第二个 T/F/N = 被试判断正确/错误/未作答
           - acc 为该轮正确率。
 
         报告文件保存在：
-            data/calc/<Name>/<YYYYMMDDHHMMSS>/Calc_*.txt
+            data/ma/<Name>/<YYYYMMDDHHMMSS>/Calc_*.txt
         """
         # 确定被试名称
         name = (
@@ -558,7 +574,7 @@ class Page6Widget(QWidget):
         )
         mode = "split" if self.separate_phases else "normal"
 
-        # 优先使用本次 run 的目录：data/calc/<name>/<timestamp>
+        # 优先使用本次 run 的目录：data/ma/<name>/<timestamp>
         base_dir = self.run_dir or self.user_dir or self.ma_root
         os.makedirs(base_dir, exist_ok=True)
 
@@ -567,7 +583,7 @@ class Page6Widget(QWidget):
 
         fname = os.path.join(
             base_dir,
-            f"Calc_{name}_{ts_for_name}_"
+            f"MA_{name}_{ts_for_name}_"
             f"loops{self.loops}_trials{self.trials}_delay{self.delay}_{mode}.txt"
         )
 
@@ -577,26 +593,26 @@ class Page6Widget(QWidget):
 
                 rec_str = '|'.join(
                     (
-                        # 未作答：在正确答案标记后面加 N
+                        # 未作答：题目真值后加 N
                         f"{expr}={disp}{'T' if flag else 'F'}N"
                         if user_input is None
-                        # 有作答：在正确答案标记后面加 T/F（保持原有格式）
-                        else f"{expr}={disp}{'T' if flag else 'F'}{'T' if user_input else 'F'}"
+                        # 有作答：题目真值后加 T/F
+                        else f"{expr}={disp}{'T' if flag else 'F'}{'T' if user_input == flag else 'F'}"
                     )
                     for expr, disp, flag, user_input in records
                 )
 
                 correct_count = sum(
                     1 for expr, disp, flag, user_input in records
-                    if user_input is not None and user_input == flag
+                    if user_input is not None and (user_input == flag)
                 )
                 acc = (correct_count / len(records)) if records else 0.0
 
-                # 硬件时间
-                start_hw = self.loop_hw_start[i] if i < len(self.loop_hw_start) else None
-                end_hw = self.loop_hw_end[i] if i < len(self.loop_hw_end) else None
-                start_val = start_hw if isinstance(start_hw, (int, float)) else float('nan')
-                end_val = end_hw if isinstance(end_hw, (int, float)) else float('nan')
+                # 本轮开始/结束时间（校准后的 EEG 时间）
+                start_t = self.loop_eeg_start[i] if i < len(self.loop_eeg_start) else None
+                end_t = self.loop_eeg_end[i] if i < len(self.loop_eeg_end) else None
+                start_val = start_t if isinstance(start_t, (int, float)) else float('nan')
+                end_val = end_t if isinstance(end_t, (int, float)) else float('nan')
 
                 f.write(
                     f"{start_val:.6f},{end_val:.6f},"
@@ -612,10 +628,10 @@ class Page6Widget(QWidget):
         self.input_enabled = False
 
         # 重置时间记录
-        self.hw_exp_start = None
-        self.hw_exp_end = None
-        self.loop_hw_start = []
-        self.loop_hw_end = []
+        self.eeg_exp_start = None
+        self.eeg_exp_end = None
+        self.loop_eeg_start = []
+        self.loop_eeg_end = []
 
         # 重置目录相关
         self.current_user_name = None

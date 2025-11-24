@@ -20,15 +20,17 @@ from PyQt6.QtWidgets import (
 from PyQt6.QtGui import QKeySequence, QShortcut
 
 
-class Page7Widget(QWidget):  # 这里没有run的概念·``
+class Page7Widget(QWidget):
     """
     EEG 实验范式单页组件（4 条 Task：慢走、慢跑、快跑、静止）。
 
-    现在的时间记录逻辑：
-    - 点击「开始实验」后立刻调用 Page2 开始保存 EEG（4 个 CSV）。
-    - 对每个 trial 的 Task 激活阶段，在 Task 开始/结束时从 Page2 获取片上时间，
-      写入日志的第 1 / 2 列（单位：秒），可以直接在 CSV 的 Time 列中精确对齐。
-    - 实验最后的结束倒计时结束后，调用 Page2 停止保存，再写 txt 报告。
+    现在的时间记录逻辑（与 Page4/5/6 一致）：
+    - 点击「开始实验」后立刻调用 Page2.start_saving(run_dir)，由 Page2 持续写 EEG CSV；
+    - 通过 Page2.get_last_eeg_time() 获取与 CSV Time 列一致的“校准后的电脑时间”（秒）；
+    - 对每个 trial 的 Task 激活阶段：
+        在 Task 开始/结束时分别记录 task_start_time / task_end_time，
+        写入 txt 报告的第 1 / 2 列，可以直接与 CSV 中 Time 对齐截取片段；
+    - 实验最后的结束倒计时结束后，调用 Page2.stop_saving()，再写 txt 报告。
     """
 
     def __init__(self, parent=None):
@@ -36,26 +38,26 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
         self.setWindowTitle("EEG 实验范式")
         self.setMinimumSize(900, 700)
 
-        # ====== MI 数据根目录：data/mi ======
+        # ====== MI 数据根目录：data/mill ======
         self.data_root = "data"
         self.mi_root = os.path.join(self.data_root, "mill")
         os.makedirs(self.mi_root, exist_ok=True)
 
         # 当前被试 & 本次实验 run 的目录
         self.current_user_name: str | None = None
-        self.user_dir: str | None = None  # data/mi/<name>
-        self.run_dir: str | None = None  # data/mi/<name>/<timestamp>
+        self.user_dir: str | None = None  # data/mill/<name>
+        self.run_dir: str | None = None   # data/mill/<name>/<timestamp>
         self.run_timestamp: str | None = None  # YYYYMMDDHHMMSS
 
         # -------------------- 默认参数 --------------------
         self.initial_countdown = 10  # 实验开始前倒计时（秒）
-        self.prompt_duration = 4.0  # 默认 Prompt 时长（秒）
-        self.task_min = 5.0  # 默认 Task 最小（秒）
-        self.task_max = 6.0  # 默认 Task 最大（秒）
-        self.assess_duration = 5.0  # 默认自评时长（秒）
-        self.break_duration = 5.0  # 默认休息时长（秒）
-        self.end_countdown = 10  # 全部结束后的倒计时（秒）
-        self.default_trials = 16  # 默认循环次数（4 的倍数）
+        self.prompt_duration = 4.0   # 默认 Prompt 时长（秒）
+        self.task_min = 5.0          # 默认 Task 最小（秒）
+        self.task_max = 6.0          # 默认 Task 最大（秒）
+        self.assess_duration = 5.0   # 默认自评时长（秒）
+        self.break_duration = 5.0    # 默认休息时长（秒）
+        self.end_countdown = 10      # 全部结束后的倒计时（秒）
+        self.default_trials = 16     # 默认循环次数（4 的倍数）
         self.conditions = ["慢走", "慢跑", "快跑", "静止"]
 
         # Likert 标签
@@ -85,7 +87,7 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
         self._task_timer = None
         self._task_remaining_secs = 0  # 以 1 秒为单位
 
-        # 逻辑时间线（毫秒），现在仅作为内部计数使用，不再写入报告
+        # 逻辑时间线（毫秒），仅内部计数使用，不写入报告
         self.logical_ms = 0
 
         # 量表点数（3 或 5），以及当前标签引用
@@ -95,15 +97,18 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
         # ===== 与 EEG 采集页面（Page2）联动相关 =====
         # 主程序中需要手动注入：page7.eeg_page = page2
         self.eeg_page = None
-        self.hw_exp_start = None  # 整个实验的起始片上时间（可选）
-        self.hw_exp_end = None  # 整个实验的结束片上时间（可选）
+        # 整个实验的起始/结束时间（与 CSV Time 使用同一“校准电脑时间轴”）
+        self.eeg_exp_start = None
+        self.eeg_exp_end = None
 
         # -------------------- UI --------------------
         root = QVBoxLayout(self)
         root.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
 
         self.instruction = QLabel(
-            "填写信息后点击开始。\n" "阶段：提示 → 任务 → 自我评估 → 休息；\n" "自评阶段请使用数字键或点击按钮评分。"
+            "填写信息后点击开始。\n"
+            "阶段：提示 → 任务 → 自我评估 → 休息；\n"
+            "自评阶段请使用数字键或点击按钮评分。"
         )
         f = self.instruction.font()
         f.setPointSize(13)
@@ -166,8 +171,7 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
         self.scale_combo = QComboBox()
         self.scale_combo.addItem("1 - 3（不同意 / 一般 / 同意）", 3)
         self.scale_combo.addItem("1 - 5（非常不同意 → 非常同意）", 5)
-        # 设置默认选中
-        self.scale_combo.setCurrentIndex(1)
+        self.scale_combo.setCurrentIndex(1)  # 默认 5 点量表
         form.addRow("自评量表:", self.scale_combo)
 
         self.start_btn = QPushButton("开始实验")
@@ -245,6 +249,45 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
         self.shortcut_esc.setContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
         self.shortcut_esc.activated.connect(self.abort_and_finalize)
 
+    # -------------------- 与 Page2 的时间交互 --------------------
+    def _get_eeg_time_from_page(self):
+        """
+        从 Page2 获取当前最新的 EEG 时间（秒），
+        使用的是与 CSV Time 列一致的“校准后的电脑时间轴”。
+        若未能获取则返回 None。
+        """
+        eeg_page = getattr(self, "eeg_page", None)
+        if eeg_page is None:
+            return None
+        getter = getattr(eeg_page, "get_last_eeg_time", None)
+        if getter is None:
+            return None
+        try:
+            return getter()
+        except Exception:
+            return None
+
+    def _record_task_start_time_for_current_trial(self):
+        """在 Task 阶段开始时调用，记录当前 trial 的开始时间（校准电脑时间，秒）。"""
+        t = self._get_eeg_time_from_page()
+        if t is None:
+            return
+        idx = self.trial_index
+        if 0 <= idx < len(self.trial_logs):
+            self.trial_logs[idx]["task_start_time"] = t
+            if self.eeg_exp_start is None:
+                self.eeg_exp_start = t
+
+    def _record_task_end_time_for_current_trial(self):
+        """在 Task 阶段结束（进入自评前）调用，记录当前 trial 的结束时间（校准电脑时间，秒）。"""
+        t = self._get_eeg_time_from_page()
+        if t is None:
+            return
+        idx = self.trial_index
+        if 0 <= idx < len(self.trial_logs):
+            self.trial_logs[idx]["task_end_time"] = t
+            self.eeg_exp_end = t
+
     # -------------------- 入口 --------------------
     def on_start_clicked(self):
         name = self.name_input.text().strip()
@@ -252,7 +295,6 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
             QMessageBox.warning(self, "错误", "请输入姓名！")
             return
 
-        trials = self.trials_spin.value
         trials = self.trials_spin.value()
         if trials % 4 != 0:
             QMessageBox.warning(self, "错误", "循环次数必须为4的倍数（如4/8/12/…）！")
@@ -266,7 +308,10 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
 
         if not eeg_page.is_listening():
             QMessageBox.warning(
-                self, "提示", "请先在【首页】点击“开始监测信号”，\n" "确保已经开始接收EEG数据后，再启动本实验范式。"
+                self,
+                "提示",
+                "请先在【首页】点击“开始监测信号”，\n"
+                "确保已经开始接收EEG数据后，再启动本实验范式。"
             )
             return
 
@@ -297,7 +342,7 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
         # 生成平均分配的 trial 计划（必为4的倍数，绝对均匀）
         self.trial_plan = self._make_balanced_plan(self.total_trials, self.conditions)
 
-        # ====== 2. 构建目录结构：data/mi/<name>/<timestamp>/ ======
+        # ====== 2. 构建目录结构：data/mill/<name>/<timestamp>/ ======
         self.current_user_name = name
         self.user_dir = os.path.join(self.mi_root, self.current_user_name)
         os.makedirs(self.user_dir, exist_ok=True)
@@ -307,8 +352,8 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
         os.makedirs(self.run_dir, exist_ok=True)
 
         # ====== 3. 启动 EEG CSV 记录（从点击“开始实验”这一刻起） ======
-        self.hw_exp_start = None
-        self.hw_exp_end = None
+        self.eeg_exp_start = None
+        self.eeg_exp_end = None
         try:
             if hasattr(eeg_page, "start_saving"):
                 # 把本次实验的 run_dir 传给 Page2，让 EEG CSV & markers.csv 写到同一目录
@@ -317,10 +362,10 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
             # 即使 EEG 保存出错，也不阻断范式本身
             pass
 
-        # 尝试记录实验整体起始片上时间
-        first_hw = self._get_hw_timestamp_from_eeg()
-        if first_hw is not None:
-            self.hw_exp_start = first_hw
+        # 尝试记录实验整体起始时间（校准电脑时间）
+        first_time = self._get_eeg_time_from_page()
+        if first_time is not None:
+            self.eeg_exp_start = first_time
 
         # UI 切换
         self.instruction.hide()
@@ -329,7 +374,7 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
 
         self.trial_logs = []
         self.trial_index = -1
-        self.logical_ms = int(self.initial_countdown * 1000)  # 逻辑时间线复位（不再写入报告，仅内部计数）
+        self.logical_ms = int(self.initial_countdown * 1000)  # 仅内部计数
 
         # 初始倒计时（无背景色，仅文字提示）
         self._show_fullscreen_message(
@@ -373,13 +418,14 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
         task_start_ms = self.logical_ms + prompt_ms
         task_end_ms = task_start_ms + task_ms
 
-        # 记录日志骨架：新增 task_start_hw / task_end_hw，用于片上时间
+        # 记录日志骨架：task_start_time / task_end_time 使用“校准电脑时间”（秒），
+        # 这里先占位，具体在 Task 阶段开始/结束时写入
         log = {
             "condition": self.current_condition,
             "task_start_ms": task_start_ms,
             "task_end_ms": task_end_ms,
-            "task_start_hw": None,  # 由 _stage_task 中记录
-            "task_end_hw": None,  # 由 _enter_assess 中记录
+            "task_start_time": None,  # 由 _stage_task 中记录
+            "task_end_time": None,    # 由 _enter_assess 中记录
             "durations": {
                 "prompt": int(self.prompt_duration),
                 "task": int(task_sec),
@@ -414,10 +460,10 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
         else:
             task_text = f"请想象【{self.current_condition}】"
 
-        # ===== 在 Task 阶段开始时记录片上时间 =====
-        self._record_task_start_hw_for_current_trial()
+        # ===== 在 Task 阶段开始时记录“校准电脑时间” =====
+        self._record_task_start_time_for_current_trial()
 
-        # 显示注视十字；显示 Task 倒计时（1s）；结束后直接进入自评
+        # 显示注视十字；结束后进入自评
         self.cross_label.show()
         dur = int(self.trial_logs[-1]["durations"]["task"])
 
@@ -440,8 +486,8 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
             self.task_count_label.hide()
 
     def _enter_assess(self):
-        # ===== 在 Task 阶段结束（进入自评前）记录片上时间 =====
-        self._record_task_end_hw_for_current_trial()
+        # ===== 在 Task 阶段结束（进入自评前）记录“校准电脑时间” =====
+        self._record_task_end_time_for_current_trial()
 
         self.cross_label.hide()
         self.task_count_label.hide()
@@ -502,7 +548,6 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
             return "刚刚是否什么都没想？"
 
     def _update_assess_text(self):
-        # 量表范围提示（仅作为说明，不显示范围数字）
         assess_text = f"{self._current_assess_question()}\n请在 {self._assess_remaining} 秒内作答"
         self.stage_label.setText(assess_text)
 
@@ -635,43 +680,6 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
             suffix = f" - {label}" if label else ""
             self.stage_label.setText(f"已记录自我评分: {value}{suffix}")
 
-    # -------------------- 与 Page2 的时间戳交互 --------------------
-    def _get_hw_timestamp_from_eeg(self):
-        """
-        从 Page2 获取当前最新的片上时间戳（秒），若失败则返回 None。
-        """
-        eeg_page = getattr(self, "eeg_page", None)
-        if eeg_page is None:
-            return None
-        getter = getattr(eeg_page, "get_last_hardware_timestamp", None)
-        if getter is None:
-            return None
-        try:
-            return getter()
-        except Exception:
-            return None
-
-    def _record_task_start_hw_for_current_trial(self):
-        """在 Task 阶段开始时调用，记录当前 trial 的片上开始时间。"""
-        hw = self._get_hw_timestamp_from_eeg()
-        if hw is None:
-            return
-        idx = self.trial_index
-        if 0 <= idx < len(self.trial_logs):
-            self.trial_logs[idx]["task_start_hw"] = hw
-            if self.hw_exp_start is None:
-                self.hw_exp_start = hw
-
-    def _record_task_end_hw_for_current_trial(self):
-        """在 Task 阶段结束（进入自评前）调用，记录当前 trial 的片上结束时间。"""
-        hw = self._get_hw_timestamp_from_eeg()
-        if hw is None:
-            return
-        idx = self.trial_index
-        if 0 <= idx < len(self.trial_logs):
-            self.trial_logs[idx]["task_end_hw"] = hw
-            self.hw_exp_end = hw
-
     # -------------------- 结束与中断 --------------------
     def _finish_and_save(self):
         """
@@ -682,9 +690,9 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
         """
         eeg_page = getattr(self, "eeg_page", None)
         if eeg_page is not None:
-            last_hw = self._get_hw_timestamp_from_eeg()
-            if last_hw is not None:
-                self.hw_exp_end = last_hw
+            last_time = self._get_eeg_time_from_page()
+            if last_time is not None:
+                self.eeg_exp_end = last_time
             if hasattr(eeg_page, "stop_saving"):
                 try:
                     eeg_page.stop_saving()
@@ -702,9 +710,9 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
         """
         eeg_page = getattr(self, "eeg_page", None)
         if eeg_page is not None:
-            last_hw = self._get_hw_timestamp_from_eeg()
-            if last_hw is not None:
-                self.hw_exp_end = last_hw
+            last_time = self._get_eeg_time_from_page()
+            if last_time is not None:
+                self.eeg_exp_end = last_time
             if hasattr(eeg_page, "stop_saving"):
                 try:
                     eeg_page.stop_saving()
@@ -743,51 +751,57 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
         self.run_timestamp = None
 
         # 重置时间记录
-        self.hw_exp_start = None
-        self.hw_exp_end = None
+        self.eeg_exp_start = None
+        self.eeg_exp_end = None
 
     # -------------------- 日志与工具 --------------------
     def _save_report(self, aborted: bool = False):
         """
         报告格式：
         每行：
-          task_start_hw,task_end_hw,condition,detail
+          task_start_time,task_end_time,condition,detail
 
-        其中 detail 含：
-          prompt / task / assess / break 各阶段逻辑秒数、
-          量表点数、评分数值与文字。
+        其中：
+          - task_start_time / task_end_time 为 Task 激活期的开始/结束时间（秒），
+            使用的是与 EEG CSV Time 列一致的“校准后的电脑时间轴”；
+          - detail 含：
+              prompt / task / assess / break 各阶段逻辑秒数、
+              量表点数、评分数值与文字。
 
         报告文件保存在：
-            data/mi/<Name>/<YYYYMMDDHHMMSS>/EEGMILL_*.txt
+            data/mill/<Name>/<YYYYMMDDHHMMSS>/EEGMILL_*.txt
         """
         # 确定被试名称
         name = self.current_user_name or self.name or self.name_input.text().strip() or "unknown"
 
         flag = 'ABORT' if aborted else 'DONE'
 
-        # 优先使用本次 run 的目录：data/mi/<name>/<timestamp>
+        # 优先使用本次 run 的目录：data/mill/<name>/<timestamp>
         base_dir = self.run_dir or self.user_dir or self.mi_root
         os.makedirs(base_dir, exist_ok=True)
 
         # 文件名里的时间戳：优先用 run_timestamp，兜底用当前时间
         ts_for_name = self.run_timestamp or datetime.now().strftime('%Y%m%d%H%M%S')
 
-        fname = os.path.join(base_dir, f"EEGMILL_{name}_{ts_for_name}_trials{len(self.trial_logs)}_{flag}.txt")
+        fname = os.path.join(
+            base_dir,
+            f"EEGMILL_{name}_{ts_for_name}_trials{len(self.trial_logs)}_{flag}.txt"
+        )
 
         try:
             with open(fname, 'w', encoding='utf-8') as f:
                 for rec in self.trial_logs:
-                    # 片上时间（秒）
-                    start_hw = rec.get("task_start_hw")
-                    end_hw = rec.get("task_end_hw")
+                    # Task 激活期的开始/结束时间（秒）
+                    start_t = rec.get("task_start_time")
+                    end_t = rec.get("task_end_time")
 
-                    if isinstance(start_hw, (int, float)):
-                        t0 = float(start_hw)
+                    if isinstance(start_t, (int, float)):
+                        t0 = float(start_t)
                     else:
                         t0 = float('nan')
 
-                    if isinstance(end_hw, (int, float)):
-                        t1 = float(end_hw)
+                    if isinstance(end_t, (int, float)):
+                        t1 = float(end_t)
                     else:
                         t1 = float('nan')
 
@@ -817,15 +831,14 @@ class Page7Widget(QWidget):  # 这里没有run的概念·``
             return []
         n = len(conditions)
         if total_trials % n != 0:
-            # 按你的 UI 已经限制是 4 的倍数，这里做个保护
             raise ValueError("total_trials must be a multiple of the number of conditions.")
 
         blocks = total_trials // n
         plan = []
         for _ in range(blocks):
             block = conditions[:]  # 拷贝一份
-            random.shuffle(block)  # 只对当前 block 随机
-            plan.extend(block)  # 追加到总计划
+            random.shuffle(block)  # 当前 block 随机
+            plan.extend(block)
         return plan
 
 

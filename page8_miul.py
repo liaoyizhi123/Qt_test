@@ -25,13 +25,13 @@ class Page8Widget(QWidget):  # 这里没有run的概念
     """
     EEG 实验范式（2 条 Task：手臂抬起、静止）。
 
-    时间记录逻辑：
+    时间记录逻辑（与 Page4/5/6/7 一致）：
     - 点击“开始实验”后，立刻调用 Page2 的 start_saving(run_dir) 开始写 EEG CSV；
       run_dir = data/arm/<Name>/<YYYYMMDDHHMMSS>。
     - 每个 trial 的 Task 阶段：
-        * Task 开始时，从 Page2 获取片上时间，记为 task_start_hw（秒）。
-        * Task 结束、进入自评前，再获取片上时间，记为 task_end_hw（秒）。
-      这两个时间写入 txt 每行的前两列，可直接和 CSV 中的 Time 列对齐。
+        * Task 开始时，从 Page2 获取“校准后的电脑时间”（秒），记为 task_start_time。
+        * Task 结束、进入自评前，再获取一次，记为 task_end_time。
+      这两个时间写入 txt 每行的前两列，可直接与 CSV 中的 Time 列对齐。
     - 所有 trial 完成后，还有一段“X 秒后实验结束”的倒计时，等倒计时结束后，
       调用 Page2 的 stop_saving()，然后写 txt 日志到 run_dir 下。
     - ESC 中断时，也会 stop_saving()，并写 ABORT 日志。
@@ -98,8 +98,9 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         # ===== 与 EEG 采集页面（Page2）联动 =====
         # 在主程序中需要： page8.eeg_page = page2
         self.eeg_page = None
-        self.hw_exp_start = None
-        self.hw_exp_end = None
+        # 整个实验的起始/结束时间（与 CSV Time 同一“校准电脑时间轴”）
+        self.eeg_exp_start = None
+        self.eeg_exp_end = None
 
         # ------- UI -------
         root = QVBoxLayout(self)
@@ -243,6 +244,45 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         self.shortcut_esc.setContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
         self.shortcut_esc.activated.connect(self.abort_and_finalize)
 
+    # ------- 与 Page2 的时间交互（校准电脑时间） -------
+    def _get_eeg_time_from_page(self):
+        """
+        从 Page2 获取当前最新的 EEG 时间（秒），
+        使用的是与 CSV Time 列一致的“校准后的电脑时间轴”。
+        若未能获取则返回 None。
+        """
+        eeg_page = getattr(self, "eeg_page", None)
+        if eeg_page is None:
+            return None
+        getter = getattr(eeg_page, "get_last_eeg_time", None)
+        if getter is None:
+            return None
+        try:
+            return getter()
+        except Exception:
+            return None
+
+    def _record_task_start_time_for_current_trial(self):
+        """在 Task 阶段开始时调用，记录当前 trial 的开始时间（校准电脑时间，秒）。"""
+        t = self._get_eeg_time_from_page()
+        if t is None:
+            return
+        idx = self.trial_index
+        if 0 <= idx < len(self.trial_logs):
+            self.trial_logs[idx]["task_start_time"] = t
+            if self.eeg_exp_start is None:
+                self.eeg_exp_start = t
+
+    def _record_task_end_time_for_current_trial(self):
+        """在 Task 阶段结束（进入自评前）调用，记录当前 trial 的结束时间（校准电脑时间，秒）。"""
+        t = self._get_eeg_time_from_page()
+        if t is None:
+            return
+        idx = self.trial_index
+        if 0 <= idx < len(self.trial_logs):
+            self.trial_logs[idx]["task_end_time"] = t
+            self.eeg_exp_end = t
+
     # ------- 入口 -------
     def on_start_clicked(self):
         name = self.name_input.text().strip()
@@ -310,8 +350,8 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         os.makedirs(self.run_dir, exist_ok=True)
 
         # ===== 启动 EEG CSV 记录（从点击“开始实验”这一刻起） =====
-        self.hw_exp_start = None
-        self.hw_exp_end = None
+        self.eeg_exp_start = None
+        self.eeg_exp_end = None
         try:
             if hasattr(eeg_page, "start_saving"):
                 # 把本次实验 run_dir 传给 Page2，让 EEG CSV 写到这里
@@ -320,10 +360,10 @@ class Page8Widget(QWidget):  # 这里没有run的概念
             # 即使保存出错，也不影响范式本身运行
             pass
 
-        # 记录整体实验起始片上时间
-        first_hw = self._get_hw_timestamp_from_eeg()
-        if first_hw is not None:
-            self.hw_exp_start = first_hw
+        # 记录整体实验起始时间（校准电脑时间）
+        first_time = self._get_eeg_time_from_page()
+        if first_time is not None:
+            self.eeg_exp_start = first_time
 
         # UI 切换
         self.instruction.hide()
@@ -379,8 +419,8 @@ class Page8Widget(QWidget):  # 这里没有run的概念
                 "condition": self.current_condition,
                 "task_start_ms": task_start_ms,
                 "task_end_ms": task_end_ms,
-                "task_start_hw": None,  # Task 开始片上时间（秒）
-                "task_end_hw": None,    # Task 结束片上时间（秒）
+                "task_start_time": None,  # Task 开始时间（校准电脑时间，秒）
+                "task_end_time": None,    # Task 结束时间（校准电脑时间，秒）
                 "durations": {
                     "prompt": int(self.prompt_duration),
                     "task": int(task_sec),
@@ -414,8 +454,8 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         else:
             task_text = "请想象【手臂抬起】"
 
-        # ===== Task 阶段开始：记录片上时间 =====
-        self._record_task_start_hw_for_current_trial()
+        # ===== Task 阶段开始：记录“校准电脑时间” =====
+        self._record_task_start_time_for_current_trial()
 
         # 不展示 task 倒计时；仅显示注视十字，时长到点自动进入评估
         self.cross_label.show()
@@ -430,8 +470,8 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         )
 
     def _enter_assess(self):
-        # ===== Task 阶段结束：记录片上时间 =====
-        self._record_task_end_hw_for_current_trial()
+        # ===== Task 阶段结束：记录“校准电脑时间” =====
+        self._record_task_end_time_for_current_trial()
 
         self.cross_label.hide()
         self.task_count_label.hide()
@@ -609,43 +649,6 @@ class Page8Widget(QWidget):  # 这里没有run的概念
                 f"已记录自我评分: {value}" + (f" - {label}" if label else "")
             )
 
-    # ------- 与 Page2 的时间戳交互 -------
-    def _get_hw_timestamp_from_eeg(self):
-        """
-        从 Page2 获取当前最新的片上时间戳（秒），若失败则返回 None。
-        """
-        eeg_page = getattr(self, "eeg_page", None)
-        if eeg_page is None:
-            return None
-        getter = getattr(eeg_page, "get_last_hardware_timestamp", None)
-        if getter is None:
-            return None
-        try:
-            return getter()
-        except Exception:
-            return None
-
-    def _record_task_start_hw_for_current_trial(self):
-        """在 Task 阶段开始时调用，记录当前 trial 的片上开始时间。"""
-        hw = self._get_hw_timestamp_from_eeg()
-        if hw is None:
-            return
-        idx = self.trial_index
-        if 0 <= idx < len(self.trial_logs):
-            self.trial_logs[idx]["task_start_hw"] = hw
-            if self.hw_exp_start is None:
-                self.hw_exp_start = hw
-
-    def _record_task_end_hw_for_current_trial(self):
-        """在 Task 阶段结束（进入自评前）调用，记录当前 trial 的片上结束时间。"""
-        hw = self._get_hw_timestamp_from_eeg()
-        if hw is None:
-            return
-        idx = self.trial_index
-        if 0 <= idx < len(self.trial_logs):
-            self.trial_logs[idx]["task_end_hw"] = hw
-            self.hw_exp_end = hw
-
     # ------- 结束与中断 -------
     def _finish_and_save(self):
         """
@@ -656,9 +659,9 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         """
         eeg_page = getattr(self, "eeg_page", None)
         if eeg_page is not None:
-            last_hw = self._get_hw_timestamp_from_eeg()
-            if last_hw is not None:
-                self.hw_exp_end = last_hw
+            last_time = self._get_eeg_time_from_page()
+            if last_time is not None:
+                self.eeg_exp_end = last_time
             if hasattr(eeg_page, "stop_saving"):
                 try:
                     eeg_page.stop_saving()
@@ -676,9 +679,9 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         """
         eeg_page = getattr(self, "eeg_page", None)
         if eeg_page is not None:
-            last_hw = self._get_hw_timestamp_from_eeg()
-            if last_hw is not None:
-                self.hw_exp_end = last_hw
+            last_time = self._get_eeg_time_from_page()
+            if last_time is not None:
+                self.eeg_exp_end = last_time
             if hasattr(eeg_page, "stop_saving"):
                 try:
                     eeg_page.stop_saving()
@@ -717,21 +720,24 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         self.run_timestamp = None
 
         # 重置时间信息
-        self.hw_exp_start = None
-        self.hw_exp_end = None
+        self.eeg_exp_start = None
+        self.eeg_exp_end = None
 
     # ------- 日志 -------
     def _save_report(self, aborted: bool = False):
         """
         每一行：
-          task_start_hw,task_end_hw,condition,detail
+          task_start_time,task_end_time,condition,detail
 
-        其中 detail 包含：
-          prompt / task / assess / break 的逻辑秒数、
-          量表点数、评分数值、评分文字。
+        其中：
+          - task_start_time / task_end_time 为 Task 激活期的开始/结束时间（秒），
+            使用的是与 EEG CSV Time 列一致的“校准后的电脑时间轴”；
+          - detail 包含：
+              prompt / task / assess / break 的逻辑秒数、
+              量表点数、评分数值、评分文字。
 
         报告文件保存到：
-          data/arm/<Name>/<YYYYMMDDHHMMSS>/EEGMI_*.txt
+          data/arm/<Name>/<YYYYMMDDHHMMSS>/EEGMIUL_*.txt
         """
         # 确定名称
         name = (
@@ -758,16 +764,16 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         try:
             with open(fname, "w", encoding="utf-8") as f:
                 for rec in self.trial_logs:
-                    start_hw = rec.get("task_start_hw")
-                    end_hw = rec.get("task_end_hw")
+                    start_t = rec.get("task_start_time")
+                    end_t = rec.get("task_end_time")
 
-                    if isinstance(start_hw, (int, float)):
-                        t0 = float(start_hw)
+                    if isinstance(start_t, (int, float)):
+                        t0 = float(start_t)
                     else:
                         t0 = float("nan")
 
-                    if isinstance(end_hw, (int, float)):
-                        t1 = float(end_hw)
+                    if isinstance(end_t, (int, float)):
+                        t1 = float(end_t)
                     else:
                         t1 = float("nan")
 

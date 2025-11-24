@@ -1,4 +1,3 @@
-
 import os
 import sys
 import random
@@ -39,11 +38,31 @@ COLOR_NAME_MAP = {
 
 
 class Page5Widget(QWidget):
+    """
+    Stroop 实验页面（Page5）
+
+    时间记录逻辑：
+      - 使用 Page2 提供的 get_last_eeg_time()，获取与 CSV 中 Time 列一致的
+        “校准后的电脑时间轴”（秒）；
+      - 每个 loop 的开始/结束时间，记录在 loop_eeg_start / loop_eeg_end；
+      - save_report() 中每一行第 1、2 列就是该 loop 的开始/结束时间，便于在 CSV 中对齐切片。
+
+    Stroop tag 规则：
+      - 每个 trial 写入时的 tag 为两个字符：
+          第一个字符：T / F
+              T = 原题为一致（congruent）
+              F = 原题为不一致（incongruent）
+          第二个字符：T / F / N
+              T = 被试判断正确
+              F = 被试判断错误
+              N = 被试未作答
+      - 例如：TT / TF / TN / FT / FF / FN
+    """
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Stroop 实验")
 
-        # 可以按需要改，比如全屏时保持中间 600 宽
         self.setMinimumSize(800, 600)
 
         # ====== Stroop 数据根目录：data/stroop ======
@@ -73,18 +92,18 @@ class Page5Widget(QWidget):
         self.current_index = 0
         self.sequence = []
         self.results_per_loop = []   # 每轮：布尔是否答对
-        self.details_per_loop = []   # 每轮：[(word_cn, color_en, 'T'/'F'/'N'), ...]
+        self.details_per_loop = []   # 每轮：[(word_cn, color_en, tag2), ...]  tag 是 "TT"/"FN" 等
         self.responded = False       # 本 trial 是否已作答
 
         # 与 EEG 采集页面（Page2）联动
         # 需要在主程序中设置：page5.eeg_page = page2
         self.eeg_page = None
-        # 整个实验的开始/结束片上时间（可选，目前仅内部使用）
-        self.hw_exp_start = None
-        self.hw_exp_end = None
-        # 每个 loop 的开始/结束片上时间（写入 txt）
-        self.loop_hw_start = []
-        self.loop_hw_end = []
+        # 整个实验的开始/结束时间（与 CSV Time 使用同一“校准电脑时间”轴）
+        self.eeg_exp_start = None
+        self.eeg_exp_end = None
+        # 每个 loop 的开始/结束时间（写入 txt）
+        self.loop_eeg_start = []
+        self.loop_eeg_end = []
 
         # ===== 外层布局：只负责把 main_container 居中 =====
         root_layout = QVBoxLayout(self)
@@ -221,6 +240,68 @@ class Page5Widget(QWidget):
 
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
 
+    # ---------------- EEG 时间工具 ----------------
+
+    def _get_eeg_time_from_page(self):
+        """
+        从 Page2 获取当前最新的 EEG 时间（秒），
+        使用的是与 CSV Time 列一致的“校准后的电脑时间轴”。
+        若未能获取则返回 None。
+        """
+        eeg_page = getattr(self, "eeg_page", None)
+        if eeg_page is None:
+            return None
+        getter = getattr(eeg_page, "get_last_eeg_time", None)
+        if getter is None:
+            return None
+        try:
+            return getter()
+        except Exception:
+            return None
+
+    def _record_loop_start_time(self, loop_index: int):
+        """
+        记录第 loop_index 个 loop 的开始时间（校准后的电脑时间）。
+        在 show_stimulus() 中，当 current_index == 0 时调用。
+        """
+        t = self._get_eeg_time_from_page()
+        if t is None:
+            return
+        if 0 <= loop_index < self.loops:
+            self.loop_eeg_start[loop_index] = t
+            # 若整体起始时间尚未记录，则用第一次 loop start 作为备选
+            if self.eeg_exp_start is None:
+                self.eeg_exp_start = t
+
+    def _record_loop_end_time(self, loop_index: int):
+        """
+        记录第 loop_index 个 loop 的结束时间（校准后的电脑时间）。
+        在 end_loop() 中调用。
+        """
+        t = self._get_eeg_time_from_page()
+        if t is None:
+            return
+        if 0 <= loop_index < self.loops:
+            self.loop_eeg_end[loop_index] = t
+            self.eeg_exp_end = t
+
+    # ---------------- Stroop 判定工具 ----------------
+
+    def _is_congruent(self, w: str, c: str) -> bool:
+        """
+        判断当前刺激是否“字意与颜色一致”。
+        w: 中文颜色字  e.g. "红"
+        c: 显示颜色英文值 e.g. "red"
+        """
+        return (
+            (w == "红" and c == "red") or
+            (w == "黄" and c == "yellow") or
+            (w == "蓝" and c == "blue") or
+            (w == "绿" and c == "green") or
+            (w == "黑" and c == "black") or
+            (w == "白" and c == "white")
+        )
+
     # ---------------- 核心流程 ----------------
 
     def start_experiment(self):
@@ -269,11 +350,11 @@ class Page5Widget(QWidget):
         self.results_per_loop = [[] for _ in range(self.loops)]
         self.details_per_loop = [[] for _ in range(self.loops)]
 
-        # 初始化时间记录
-        self.hw_exp_start = None
-        self.hw_exp_end = None
-        self.loop_hw_start = [None] * self.loops
-        self.loop_hw_end = [None] * self.loops
+        # 初始化时间记录（统一使用“校准后的电脑时间”）
+        self.eeg_exp_start = None
+        self.eeg_exp_end = None
+        self.loop_eeg_start = [None] * self.loops
+        self.loop_eeg_end = [None] * self.loops
 
         # ==== 关键：在“有效点击 Start Stroop”后立刻开始保存 EEG CSV ====
         if hasattr(eeg_page, "start_saving"):
@@ -284,10 +365,10 @@ class Page5Widget(QWidget):
                 # Page2 内部会处理错误，这里不中断 Stroop 实验
                 pass
 
-        # 尝试记录实验整体起始片上时间
-        first_hw = self._get_hw_timestamp_from_eeg()
-        if first_hw is not None:
-            self.hw_exp_start = first_hw
+        # 尝试记录实验整体起始时间（校准后的 EEG 时间轴）
+        first_time = self._get_eeg_time_from_page()
+        if first_time is not None:
+            self.eeg_exp_start = first_time
 
         # 隐藏设置区
         self.name_input.parent().hide()
@@ -347,9 +428,9 @@ class Page5Widget(QWidget):
             self.end_loop()
             return
 
-        # 若是本轮第一个 trial，记录本轮开始片上时间
+        # 若是本轮第一个 trial，记录本轮开始时间（校准后的 EEG 时间）
         if self.current_index == 0:
-            self._record_loop_start_hw(self.current_loop - 1)
+            self._record_loop_start_time(self.current_loop - 1)
 
         self.hint_label.clear()
         self.btn_left.setChecked(False)
@@ -398,32 +479,39 @@ class Page5Widget(QWidget):
         if self.current_index >= len(self.sequence):
             return
 
+        # 分离模式下：作答期结束仍未响应，记为未作答
         if not self.responded:
             w, c = self.sequence[self.current_index]
+            is_congruent = self._is_congruent(w, c)
+            gt_char = 'T' if is_congruent else 'F'
+            tag = gt_char + 'N'  # 未作答
+
             self.results_per_loop[self.current_loop - 1].append(False)
-            self.details_per_loop[self.current_loop - 1].append((w, c, 'N'))
+            self.details_per_loop[self.current_loop - 1].append((w, c, tag))
 
         self.current_index += 1
         self.show_stimulus()
 
     def record_response(self, user_cong: bool):
+        """
+        user_cong: True = 被试认为一致；False = 被试认为不一致
+        """
         if self.responded or self.current_index >= len(self.sequence):
             return
 
         w, c = self.sequence[self.current_index]
-        is_congruent = (
-            (w == "红" and c == "red")
-            or (w == "黄" and c == "yellow")
-            or (w == "蓝" and c == "blue")
-            or (w == "绿" and c == "green")
-            or (w == "黑" and c == "black")
-            or (w == "白" and c == "white")
-        )
+        is_congruent = self._is_congruent(w, c)
         is_correct = (user_cong == is_congruent)
 
+        # 正确率统计用
         self.results_per_loop[self.current_loop - 1].append(is_correct)
-        label_tf = 'T' if is_correct else 'F'
-        self.details_per_loop[self.current_loop - 1].append((w, c, label_tf))
+
+        # tag: 第一个字母是题目真值 T/F；第二个字母是被试表现 T/F
+        gt_char = 'T' if is_congruent else 'F'
+        resp_char = 'T' if is_correct else 'F'
+        tag = gt_char + resp_char
+
+        self.details_per_loop[self.current_loop - 1].append((w, c, tag))
 
         self.btn_left.setEnabled(False)
         self.btn_right.setEnabled(False)
@@ -441,21 +529,25 @@ class Page5Widget(QWidget):
         self.responded = True
 
     def next_stimulus(self):
-        # 原始模式：delay 结束切下一 trial，未作答记 N
+        # 原始模式：delay 结束切下一 trial，未作答也算一次
         if self.separate_phases:
             return
 
         if not self.responded and self.current_index < len(self.sequence):
             w, c = self.sequence[self.current_index]
+            is_congruent = self._is_congruent(w, c)
+            gt_char = 'T' if is_congruent else 'F'
+            tag = gt_char + 'N'  # 未作答
+
             self.results_per_loop[self.current_loop - 1].append(False)
-            self.details_per_loop[self.current_loop - 1].append((w, c, 'N'))
+            self.details_per_loop[self.current_loop - 1].append((w, c, tag))
 
         self.current_index += 1
         self.show_stimulus()
 
     def end_loop(self):
-        # 记录本轮结束时的片上时间
-        self._record_loop_end_hw(self.current_loop - 1)
+        # 记录本轮结束时的时间（校准后的 EEG 时间）
+        self._record_loop_end_time(self.current_loop - 1)
 
         self.stim_label.hide()
         self.btn_left.hide()
@@ -496,9 +588,9 @@ class Page5Widget(QWidget):
             # ==== 实验整体结束：先停止 EEG 保存，再写 txt ====
             eeg_page = getattr(self, "eeg_page", None)
             if eeg_page is not None:
-                last_hw = self._get_hw_timestamp_from_eeg()
-                if last_hw is not None:
-                    self.hw_exp_end = last_hw
+                last_time = self._get_eeg_time_from_page()
+                if last_time is not None:
+                    self.eeg_exp_end = last_time
                 if hasattr(eeg_page, "stop_saving"):
                     try:
                         eeg_page.stop_saving()
@@ -508,49 +600,6 @@ class Page5Widget(QWidget):
             self.save_report()
             self.reset_ui()
 
-    # ========== 与 Page2（EEG 页面）的时间戳交互辅助函数 ==========
-
-    def _get_hw_timestamp_from_eeg(self):
-        """
-        从 Page2 获取当前最新的片上时间戳（秒），若失败则返回 None。
-        """
-        eeg_page = getattr(self, "eeg_page", None)
-        if eeg_page is None:
-            return None
-        getter = getattr(eeg_page, "get_last_hardware_timestamp", None)
-        if getter is None:
-            return None
-        try:
-            return getter()
-        except Exception:
-            return None
-
-    def _record_loop_start_hw(self, loop_index: int):
-        """
-        记录第 loop_index 个 loop 的开始片上时间。
-        在 show_stimulus() 中，当 current_index == 0 时调用。
-        """
-        hw = self._get_hw_timestamp_from_eeg()
-        if hw is None:
-            return
-        if 0 <= loop_index < self.loops:
-            self.loop_hw_start[loop_index] = hw
-            # 若整体起始时间尚未记录，则用第一次 loop start 作为备选
-            if self.hw_exp_start is None:
-                self.hw_exp_start = hw
-
-    def _record_loop_end_hw(self, loop_index: int):
-        """
-        记录第 loop_index 个 loop 的结束片上时间。
-        在 end_loop() 中调用。
-        """
-        hw = self._get_hw_timestamp_from_eeg()
-        if hw is None:
-            return
-        if 0 <= loop_index < self.loops:
-            self.loop_hw_end[loop_index] = hw
-            self.hw_exp_end = hw
-
     # ========== 报告与复位 ==========
 
     def save_report(self):
@@ -558,15 +607,17 @@ class Page5Widget(QWidget):
         将本次 Stroop 实验写入 txt 报告。
 
         每一行格式：
-            loop_start_hw,loop_end_hw,stroop,accuracy,seq_str
+            loop_start_time,loop_end_time,stroop,accuracy,seq_str
 
         其中：
-          - loop_start_hw / loop_end_hw 为该 loop 的开始/结束片上时间（秒）；
+          - loop_start_time / loop_end_time 为该 loop 的开始/结束时间（秒），
+            使用的是与 CSV Time 列一致的“校准后的电脑时间轴”；
           - accuracy 为该轮正确率；
           - seq_str 为该轮 trial 序列，形如：
-              字‘红’颜色‘黄’T|字‘蓝’颜色‘绿’F|...
-        报告文件保存在：
-            data/stroop/<Name>/<YYYYMMDDHHMMSS>/Stroop_*.txt
+              字‘红’颜色‘黄’TF|字‘蓝’颜色‘绿’TN|...
+            其中 tag 为两个字符：
+              第 1 个：T/F 表示题目是否一致
+              第 2 个：T/F/N 表示被试是否判断正确/错误/未作答
         """
         # 确定被试名称
         name = (
@@ -605,11 +656,11 @@ class Page5Widget(QWidget):
                     seq_items.append(f"字‘{w}’颜色‘{c_cn}’{tag}")
                 seq_str = "|".join(seq_items)
 
-                # 硬件时间
-                start_hw = self.loop_hw_start[i] if i < len(self.loop_hw_start) else None
-                end_hw = self.loop_hw_end[i] if i < len(self.loop_hw_end) else None
-                start_val = start_hw if isinstance(start_hw, (int, float)) else float('nan')
-                end_val = end_hw if isinstance(end_hw, (int, float)) else float('nan')
+                # 该轮开始/结束时间（校准后的 EEG 时间）
+                start_t = self.loop_eeg_start[i] if i < len(self.loop_eeg_start) else None
+                end_t = self.loop_eeg_end[i] if i < len(self.loop_eeg_end) else None
+                start_val = start_t if isinstance(start_t, (int, float)) else float('nan')
+                end_val = end_t if isinstance(end_t, (int, float)) else float('nan')
 
                 f.write(
                     f"{start_val:.6f},{end_val:.6f},"
@@ -624,10 +675,10 @@ class Page5Widget(QWidget):
         self.details_per_loop = []
 
         # 重置时间记录
-        self.hw_exp_start = None
-        self.hw_exp_end = None
-        self.loop_hw_start = []
-        self.loop_hw_end = []
+        self.eeg_exp_start = None
+        self.eeg_exp_end = None
+        self.loop_eeg_start = []
+        self.loop_eeg_end = []
 
         # 重置目录相关（不清空界面上的姓名输入框）
         self.current_user_name = None
@@ -644,7 +695,6 @@ class Page5Widget(QWidget):
 
         self.name_input.parent().show()
         self.start_btn.show()
-        # 可以顺手把焦点给 Name 输入框
         self.name_input.setFocus()
 
     def keyPressEvent(self, event):
