@@ -1,0 +1,51 @@
+dataset:
+  name: my_eeg_dataset_eye_movement
+  path: data/eye_movement_eeg
+  
+  device:
+    sampling_rate: 1000
+    n_channels: 3
+    channels_names:
+      - PFC_0
+      - PFC_1
+      - PFC_2
+  
+  annotations:
+    label_projection:
+      # 0: 'up'
+      # 1: 'down'
+      0: 'left'
+      1: 'right'
+      2: 'two'
+      3: 'three'
+      4: 'normal'
+    str_mapping:
+      # 'up': 'up'
+      # 'down': 'down'
+      'left': 'left'
+      'right': 'right'
+      'two': 'two'
+      'three': 'three'
+      'normal': 'normal'
+  
+  slicing:
+    t_min: 0.0  # 原本为0.0，为了画TF_image改为-0.2
+    t_max: 5.0
+
+  preprocessing:
+    filter:
+      enable: false
+      l_freq: 0.5
+      h_freq: 45.0
+      order: 4
+      notch: 50.0
+    resampling:
+      enable: true
+      new_sfreq: 128
+  
+  # time_frequency_analysis:
+  #   enable: true
+  #   ERD:
+  #     t_min: -2.0
+  #     t_max: 5.0
+      

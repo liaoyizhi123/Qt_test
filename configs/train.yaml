@@ -1,0 +1,26 @@
+seed: 42
+train:
+  batch_size: 128
+  epochs: 500
+  lr: 0.001
+  l1_lambda: 0.0
+  l2_lambda: 0.000001
+  early_stopping_patience: 500  # close early stopping
+
+model:
+  name: EEGNet
+  params:
+    # xx: 12
+    # F1: 8
+    # D: 2
+    # F2: 16
+    # norm_rate: 0.25
+
+  # name: ATCNet
+  # params:
+
+  # name: Model
+  # params:
+  #   kk: 1
+  ###
+  

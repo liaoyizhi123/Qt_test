@@ -11,7 +11,8 @@ from page5_stroop import Page5Widget
 from page6_ma import Page6Widget
 from page7_mill import Page7Widget
 from page8_miul import Page8Widget
-from page9_eye import Page9Widget  # FIXME.
+from page9_eye import Page9Widget
+from page10_realtime import Page10Widget  # FIXME.
 
 
 class Ui_MainWindow(QMainWindow):
@@ -248,6 +249,17 @@ class Ui_MainWindow(QMainWindow):
         self.btn_lef_eye.setIconSize(QtCore.QSize(32, 32))
         self.btn_lef_eye.setObjectName("btn_lef_eye")
         self.verticalLayout_8.addWidget(self.btn_lef_eye)
+        # 实时
+        self.btn_lef_realtime = QtWidgets.QPushButton(parent=self.left_center)
+        self.btn_lef_realtime.setMinimumSize(QtCore.QSize(0, 50))
+        self.btn_lef_realtime.setMaximumSize(QtCore.QSize(16777215, 50))
+        self.btn_lef_realtime.setText("")
+        icon10 = QtGui.QIcon()
+        icon10.addPixmap(QtGui.QPixmap("resources/icons/data_view.png"), QtGui.QIcon.Mode.Normal, QtGui.QIcon.State.Off)
+        self.btn_lef_realtime.setIcon(icon10)
+        self.btn_lef_realtime.setIconSize(QtCore.QSize(32, 32))
+        self.btn_lef_realtime.setObjectName("btn_lef_realtime")
+        self.verticalLayout_8.addWidget(self.btn_lef_realtime)
         # FIXME.
 
         # ⭐ 统一为导航按钮打上 nav 属性，交给 QSS 控制样式
@@ -261,7 +273,9 @@ class Ui_MainWindow(QMainWindow):
             self.btn_lef_mi_lower,
             self.btn_lef_mi_upper,
             self.btn_lef_eye,
+            self.btn_lef_realtime, 
         ]
+        # FIXME.
         for btn in self.nav_buttons:
             btn.setProperty("nav", True)
 
@@ -337,6 +351,11 @@ class Ui_MainWindow(QMainWindow):
         self.page_9.eeg_page = self.page_2
         self.stackedWidget.addWidget(self.page_9)
 
+        self.page_10 = Page10Widget(self.stackedWidget)
+        self.page_10.setObjectName("page_10")
+        self.page_10.eeg_page = self.page_2
+        self.stackedWidget.addWidget(self.page_10)
+
         # FIXME.
 
         self.verticalLayout_9.addWidget(self.stackedWidget)
@@ -359,7 +378,8 @@ class Ui_MainWindow(QMainWindow):
             self.btn_lef_ma,
             self.btn_lef_mi_lower,
             self.btn_lef_mi_upper,
-            self.btn_lef_eye,  # FIXME.
+            self.btn_lef_eye,
+            self.btn_lef_realtime,  # FIXME.
             self.stackedWidget,
         )
 
@@ -376,7 +396,8 @@ class Ui_MainWindow(QMainWindow):
         btn_lef_ma,
         btn_lef_mi_lower,
         btn_lef_mi_upper,
-        btn_lef_eye,  # FIXME.
+        btn_lef_eye,
+        btn_lef_realtime,  # FIXME.
         stackedWidget,
     ):
         btn_lef_home.clicked.connect(lambda: self.change_btn_page(0, stackedWidget))
@@ -387,7 +408,8 @@ class Ui_MainWindow(QMainWindow):
         btn_lef_ma.clicked.connect(lambda: self.change_btn_page(5, stackedWidget))
         btn_lef_mi_lower.clicked.connect(lambda: self.change_btn_page(6, stackedWidget))
         btn_lef_mi_upper.clicked.connect(lambda: self.change_btn_page(7, stackedWidget))
-        btn_lef_eye.clicked.connect(lambda: self.change_btn_page(8, stackedWidget))  # FIXME.
+        btn_lef_eye.clicked.connect(lambda: self.change_btn_page(8, stackedWidget))
+        btn_lef_realtime.clicked.connect(lambda: self.change_btn_page(9, stackedWidget))  # FIXME.
         # ⭐ 这里不再设置 currentIndex，避免和 change_btn_page 冲突
         # stackedWidget.setCurrentIndex(1)
 
@@ -431,9 +453,12 @@ class Ui_MainWindow(QMainWindow):
         elif current_index == 7:
             self._set_nav_selected(self.btn_lef_mi_upper, True)
             self.proj_title.setText("Motor Imagery(Upper Limb), 按下【开始实验】，会同时开始记录脑电信号")
-        elif current_index == 8:  # FIXME.
+        elif current_index == 8:
             self._set_nav_selected(self.btn_lef_eye, True)
             self.proj_title.setText("睁眼/闭眼实验, 按下【开始实验】，会同时开始记录脑电信号")
+        elif current_index == 9:
+            self._set_nav_selected(self.btn_lef_realtime, True)
+            self.proj_title.setText("实时脑电数据展示")  # FIXME.
 
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
