@@ -1036,16 +1036,16 @@ class Page2Widget(QtWidgets.QWidget):
             self.channel_data_x[ch].append(t_s)
             self.channel_data_y[ch].append(v)
 
-        # 当前显示通道列表
-        channels_sorted = sorted(self.active_channels_in_plot)
-        visible_channels = []
-        for c in channels_sorted:
-            cb = self.channel_checkboxes.get(c)
-            if cb is None or cb.isChecked():
-                visible_channels.append(c)
-
         now = time.time()
         if now - self.last_plot_time >= self.plot_interval:
+            # 当前显示通道列表
+            channels_sorted = sorted(self.active_channels_in_plot)
+            visible_channels = []
+            for c in channels_sorted:
+                cb = self.channel_checkboxes.get(c)
+                if cb is None or cb.isChecked():
+                    visible_channels.append(c)
+
             # 只在重绘时更新状态文字 + 颜色
             self.label_1.setText(
                 f"{LabelStates.receiving.value} 当前显示通道: {visible_channels}"

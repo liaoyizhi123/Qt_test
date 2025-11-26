@@ -7,10 +7,10 @@ import time
 import queue
 import struct
 import logging
+import random
 from collections import deque
 from dataclasses import dataclass
 from typing import List, Optional, Dict, Tuple
-
 from pathlib import Path
 
 import yaml
@@ -87,11 +87,18 @@ class TimeRegulatingResult:
 
 
 class ActualTimeRegulator:
+    """
+    与 Page2 一致的时间校正器：
+    - pack_time: 片上时间（秒）
+    - received_at: 会话起点以来的 elapsed 秒（monotonic）
+    """
+
     def __init__(self, rollback_tolerance_sec: float = 0.01):
         self._first_pack_time: float = 0.0
         self._prev_pack_time: float = 0.0
         self._first_pack_computer_time: float = 0.0
         self._first_pack: bool = True
+        # 当片上时间回退超过此阈值时，认为异常并重置
         self._rollback_tolerance = rollback_tolerance_sec
 
     def reset(self):
@@ -102,29 +109,53 @@ class ActualTimeRegulator:
 
     def get_time(self, pack_time: float, received_at: float) -> TimeRegulatingResult:
         if (not self._first_pack) and (pack_time + self._rollback_tolerance < self._prev_pack_time):
+            # 片上时间明显回退，认为异常，重置状态并跳过该包
             self.reset()
             return TimeRegulatingResult(False, True, received_at)
+
         if self._first_pack:
+            # 第一包：建立基准，只记录，不输出校正时间
             self._first_pack_time = pack_time
             self._first_pack_computer_time = received_at
             self._first_pack = False
             self._prev_pack_time = pack_time
             return TimeRegulatingResult(False, False, received_at)
+
+        # 对齐到电脑时间轴
         regulated = (pack_time - self._first_pack_time) + self._first_pack_computer_time
         self._prev_pack_time = pack_time
         return TimeRegulatingResult(True, False, regulated)
 
 
-# ====================== UDP 接收器（与 page2 对齐） ======================
+# ====================== UDP 接收器（与 Page2 对齐 + 网络模拟） ======================
 
 class UdpEegReceiver(QObject):
-    data_received = pyqtSignal(object)
-    error_occurred = pyqtSignal(str)
+    """
+    UDP EEG数据接收器 - PyQt6版本
 
-    PACK_INFO_LENGTH = 17
+    解包逻辑与 C# 的 V2BufferParser 对齐：
+    每个包结构（从某个索引 i 开始）：
+        [0]   SensorType
+        [1]   SensorType  (与 [0] 相同)
+        [2-4] Serial Number (3字节)
+        [5]   Channel Number (0xFF = MetaInfo)
+        [6-7] DataLength (大端)
+        [8 ... 8+DataLength-1]       Data 区
+        [8+DataLength ... +7]        OnBoardTime 时间戳（8字节，大端 uint64，单位：微秒）
+        [8+DataLength+8]             CRC8 校验和（此处暂不实际校验，只预留接口）
 
-    def __init__(self, host: str = "0.0.0.0", port: int = 30300, buffer_size: int = 8192,
-                 parent: Optional[QObject] = None):
+    总长度 = DataLength + PACK_INFO_LENGTH (17)
+    """
+
+    data_received = pyqtSignal(object)  # 发出 EegDataPacket 实例
+    error_occurred = pyqtSignal(str)    # 错误发生
+
+    PACK_INFO_LENGTH = 17  # header(8) + timestamp(8) + CRC(1)
+
+    def __init__(
+        self, host: str = "0.0.0.0", port: int = 30300, buffer_size: int = 8192,
+        parent: Optional[QObject] = None
+    ):
         super().__init__(parent)
         self.host = host
         self.port = port
@@ -140,52 +171,83 @@ class UdpEegReceiver(QObject):
         self._last_stat_time = time.time()
         self.receiver_thread: Optional[threading.Thread] = None
 
+        # 最近一次接收到的片上时间戳（秒）
         self._last_hw_timestamp: Optional[float] = None
+        # 最近一次接收到的“校正后的电脑时间”（秒）
         self._last_regulated_ts: Optional[float] = None
 
+        # 每个通道一个时间纠正器和排序缓冲区
         self._time_regulators: Dict[int, ActualTimeRegulator] = {}
         self._sorted_packets: Dict[int, List[Tuple[float, EegDataPacket]]] = {}
         self._buffer_size_per_channel: int = 5
 
+        # 会话起点，用于生成“电脑时间轴” received_at
         self._start_monotonic: Optional[float] = None
 
+        # ====== 模拟网络不稳定相关参数（默认开启丢包）======
+        self.enable_loss_simulation = False   # 是否开启模拟丢包
+        self.loss_rate = 0.6                  # 丢包比例（0~1）
+        self.enable_jitter_simulation = False  # 是否模拟随机延迟
+        self.jitter_max_delay = 0.05           # 最大延迟秒数
+
     def get_last_hw_timestamp(self) -> Optional[float]:
+        """返回最近一次接收到的数据包的片上时间戳（秒）。如果还没有收到任何数据则返回 None。"""
         return self._last_hw_timestamp
 
     def get_last_regulated_timestamp(self) -> Optional[float]:
+        """
+        返回最近一次接收到的数据包的“校正后的电脑时间”（秒）。
+        """
         return self._last_regulated_ts
 
     def is_running(self) -> bool:
+        """当前 UDP 接收线程是否在运行。"""
         return self.running
 
+    # -------- 启动 / 停止 --------
+
     def start(self):
+        """启动UDP接收器"""
         if self.running:
             self.logger.warning("接收器已经在运行中")
             return
+
         try:
             self.running = True
             self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+
+            # 尝试增大接收缓冲区
             try:
                 self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 2 * 1024 * 1024)
                 actual_buffer = self.socket.getsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF)
                 self.logger.info(f"Socket接收缓冲区大小: {actual_buffer} 字节")
             except Exception as e:
                 self.logger.warning(f"设置socket缓冲区失败: {e}")
+
             self.socket.bind((self.host, self.port))
-            self.socket.settimeout(0.1)
+            self.socket.settimeout(0.1)  # 100ms 超时，方便干净关闭
 
             self._recv_count = 0
             self._last_stat_time = time.time()
             self._last_hw_timestamp = None
             self._last_regulated_ts = None
+
+            # 重置时间纠正器与排序队列
             self._time_regulators.clear()
             self._sorted_packets.clear()
+
+            # 会话起点
             self._start_monotonic = time.monotonic()
 
-            self.receiver_thread = threading.Thread(target=self._receive_loop, daemon=True,
-                                                    name="UDP-Receiver-Thread")
+            self.receiver_thread = threading.Thread(
+                target=self._receive_loop,
+                daemon=True,
+                name="UDP-Receiver-Thread",
+            )
             self.receiver_thread.start()
+
             self.logger.info(f"UDP接收器已启动，监听 {self.host}:{self.port}")
+
         except Exception as e:
             self.running = False
             self.logger.error(f"启动UDP接收器失败: {e}")
@@ -193,26 +255,44 @@ class UdpEegReceiver(QObject):
             raise
 
     def stop(self):
+        """停止UDP接收器"""
         if not self.running:
             return
+
         self.running = False
         if self.socket:
             self.socket.close()
             self.socket = None
+
         if self.receiver_thread and self.receiver_thread.is_alive():
             self.receiver_thread.join(timeout=2.0)
+
         self.logger.info("UDP接收器已停止")
 
+    # -------- 接收 & 解析循环（含时间校正 + 排序 + 网络模拟） --------
+
     def _receive_loop(self):
+        """接收循环，在单独线程中运行"""
         while self.running:
             try:
                 data, addr = self.socket.recvfrom(self.buffer_size)
-                system_ts_wall = time.time()
+
+                # ---- (可选) 模拟网络抖动：随机延迟一小段时间 ----
+                if self.enable_jitter_simulation and self.jitter_max_delay > 0:
+                    time.sleep(random.uniform(0, self.jitter_max_delay))
+
+                # ---- (可选) 模拟 UDP 丢包：随机丢弃整个 datagram ----
+                if self.enable_loss_simulation and random.random() < self.loss_rate:
+                    self.logger.warning("【模拟丢包】随机丢弃 1 个 UDP datagram")
+                    continue
+
+                system_ts_wall = time.time()  # 真正的电脑时间（用于日志）
                 if self._start_monotonic is not None:
                     recv_elapsed = time.monotonic() - self._start_monotonic
                 else:
                     recv_elapsed = 0.0
 
+                # 统计接收速率（仅日志用）
                 self._recv_count += 1
                 if self._recv_count % 100 == 0:
                     elapsed = system_ts_wall - self._last_stat_time
@@ -220,31 +300,41 @@ class UdpEegReceiver(QObject):
                     self.logger.info(f"UDP接收速率: {rate:.1f} packet/s (已接收{self._recv_count}个)")
                     self._last_stat_time = system_ts_wall
 
+                # 解析一个 datagram 中可能包含的多个包
                 packets = self._parse_eeg_packet(data)
+
+                # 如果解析不到合法数据，直接跳过
                 if not packets:
                     continue
 
+                # 使用与 C# 类似的逻辑：按通道使用 ActualTimeRegulator + 排序缓冲
                 for packet in packets:
                     ch = packet.channel
+
+                    # 维护“最大片上时间”，用于上层查询
                     if self._last_hw_timestamp is None or packet.hardware_timestamp > self._last_hw_timestamp:
                         self._last_hw_timestamp = packet.hardware_timestamp
 
+                    # 获取 / 创建通道对应的时间调节器
                     regulator = self._time_regulators.get(ch)
                     if regulator is None:
                         regulator = ActualTimeRegulator()
                         self._time_regulators[ch] = regulator
 
+                    # 获取 / 创建通道对应的排序缓冲区
                     channel_buf = self._sorted_packets.get(ch)
                     if channel_buf is None:
                         channel_buf = []
                         self._sorted_packets[ch] = channel_buf
 
+                    # 对应 C# regulator.GetTime(packNumber, session.Stopwatch.Elapsed.TotalSeconds)
                     reg_result = regulator.get_time(
-                        pack_time=packet.hardware_timestamp,
-                        received_at=recv_elapsed,
+                        pack_time=packet.hardware_timestamp,  # 秒
+                        received_at=recv_elapsed,             # 秒
                     )
 
                     if reg_result.pack_skipped:
+                        # 如果出现“片上时间倒退”，C# 会 Reset，并跳过该包
                         self.logger.warning(
                             f"通道 {ch} 监测到片上时间倒退超过阈值，本包被跳过并重置时间调节器"
                         )
@@ -252,13 +342,17 @@ class UdpEegReceiver(QObject):
                         continue
 
                     if not reg_result.valid:
+                        # 第一包仅建立基准，不输出
                         continue
 
+                    # 写入“校正后的电脑时间”
                     packet.system_timestamp = reg_result.regulated_time
 
+                    # 按片上时间排序缓存
                     channel_buf.append((packet.hardware_timestamp, packet))
                     channel_buf.sort(key=lambda x: x[0])
 
+                    # 当该通道缓存达到一定数量后，弹出最早的一个包
                     if len(channel_buf) >= self._buffer_size_per_channel:
                         _, out_packet = channel_buf.pop(0)
                         self._emit_packet(out_packet)
@@ -271,14 +365,36 @@ class UdpEegReceiver(QObject):
                     self.error_occurred.emit(f"接收数据时出错: {e}")
 
     def _emit_packet(self, packet: EegDataPacket):
+        """将排序好的包发给上层（通过 signal）"""
         self.packet_count += 1
         self.active_channels.add(packet.channel)
+
+        # 记录最近一个“校正后的电脑时间”
         if packet.system_timestamp > 0:
             self._last_regulated_ts = packet.system_timestamp
+
+        # 这里保留 data_queue 以防后续需要
         self.data_queue.put(packet)
+        # 直接通过信号发给上层
         self.data_received.emit(packet)
 
+    # -------- C# 风格 UDP 解包 --------
+
     def _parse_eeg_packet(self, data: bytes) -> List[EegDataPacket]:
+        """
+        解包逻辑改成 C# V2BufferParser 的形式：
+        - 包格式：
+            SensorType,
+            SensorType,
+            Serial(3B),
+            Channel,
+            DataLen(2B),
+            Data(DataLenB),
+            Timestamp(8B, big-endian, µs),
+            CRC(1B)
+        - 总长度 = DataLen + PACK_INFO_LENGTH (17)
+        - 假设一个 UDP datagram 内不会截断单个包（UDP 不会拆包），但可能包含多个包
+        """
         packets: List[EegDataPacket] = []
         buf = data
         n = len(buf)
@@ -287,12 +403,16 @@ class UdpEegReceiver(QObject):
         while i + self.PACK_INFO_LENGTH <= n:
             if i + 8 > n:
                 break
+
             sensor_type = buf[i]
             sensor_type_dup = buf[i + 1]
+
+            # 对应 C# MatchPackInfo：两个字节相同
             if sensor_type != sensor_type_dup:
                 i += 1
                 continue
 
+            # DataLength（大端）
             data_len = (buf[i + 6] << 8) | buf[i + 7]
             if data_len <= 0:
                 i += 1
@@ -301,44 +421,57 @@ class UdpEegReceiver(QObject):
             total_len = data_len + self.PACK_INFO_LENGTH
             pack_end = i + total_len - 1
             if pack_end >= n:
+                # 剩余数据不足一个完整包
                 break
 
+            # CRC 校验暂不实现
             frame_data = buf[i: pack_end + 1]
             packet = self._parse_single_channel_frame(frame_data)
             if packet is not None:
                 packets.append(packet)
 
-            i = pack_end + 1
+            i = pack_end + 1  # 跳到下一个候选包起点
 
         return packets
 
     def _parse_single_channel_frame(self, frame_data: bytes) -> Optional[EegDataPacket]:
+        """解析单个通道的数据帧"""
         try:
             if len(frame_data) < self.PACK_INFO_LENGTH:
                 return None
 
+            # --- 头部：SensorType / Serial / Channel / DataLength ---
             sensor_type = frame_data[0]
             sensor_type_dup = frame_data[1]
             if sensor_type != sensor_type_dup:
                 return None
 
+            # 传感器序列号（3 字节）
             serial_raw = (frame_data[2] << 16) | (frame_data[3] << 8) | frame_data[4]
+
+            # 通道号
             channel = frame_data[5]
+
+            # meta 信息（Channel == 0xFF）忽略
             if channel == 0xFF:
                 return None
 
+            # 数据长度（大端）
             data_length = (frame_data[6] << 8) | frame_data[7]
             expected_len = data_length + self.PACK_INFO_LENGTH
             if len(frame_data) != expected_len:
                 return None
 
+            # --- 时间戳：8 + DataLen 开始的 8 字节，big-endian 微秒 ---
             timestamp_offset = 8 + data_length
             if timestamp_offset + 8 > len(frame_data):
                 return None
 
             hardware_ts_raw = struct.unpack(">Q", frame_data[timestamp_offset: timestamp_offset + 8])[0]
+            # 微秒 -> 秒
             hardware_ts = hardware_ts_raw / 1_000_000.0
 
+            # --- 数据区：从 8 开始，长度 data_length ---
             data_bytes = frame_data[8: 8 + data_length]
             data_point_count = data_length // 3
             samples: List[float] = []
@@ -351,6 +484,7 @@ class UdpEegReceiver(QObject):
                 b2 = data_bytes[base + 1]
                 b3 = data_bytes[base + 2]
 
+                # 24bit 转 32bit 有符号整数
                 if (b1 & 0x80) != 0:
                     raw_value = (b1 << 16) | (b2 << 8) | b3 | (0xFF << 24)
                 else:
@@ -367,11 +501,12 @@ class UdpEegReceiver(QObject):
 
             return EegDataPacket(
                 hardware_timestamp=hardware_ts,
-                system_timestamp=0.0,
+                system_timestamp=0.0,  # 占位，后续由 ActualTimeRegulator 覆盖
                 data=samples,
                 channel=channel,
                 raw_packet=frame_data,
             )
+
         except Exception as e:
             self.logger.error(f"解析单通道数据帧失败: {e}")
             return None
@@ -541,16 +676,19 @@ class Page10Widget(QtWidgets.QWidget):
         self.data_dir = self.default_data_dir
         os.makedirs(self.data_dir, exist_ok=True)
 
+        # 传感器序列号（默认值 000003，真正的值在收到第一帧数据后解析）
         self.sensor_serial: str = "000003"
         self._sensor_serial_parsed: bool = False
 
         self.last_plot_time = 0.0
-        self.plot_interval = 1.0 / 30.0
+        self.plot_interval = 1.0 / 30.0  # 最多 ~30 FPS
 
         self.main_layout = QtWidgets.QVBoxLayout(self)
         self.main_layout.setAlignment(Qt.AlignmentFlag.AlignTop)
         self.main_layout.setContentsMargins(0, 0, 0, 0)
         self.main_layout.setSpacing(4)
+
+        # ===================== 顶部控件行 =====================
 
         # ---------- 端口 ----------
         self.label_port = QtWidgets.QLabel("端口：")
@@ -693,6 +831,7 @@ class Page10Widget(QtWidgets.QWidget):
         self.label_probs_value = QtWidgets.QLabel("——")
         self.label_probs_value.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.label_probs_value.setMinimumWidth(260)
+        self.label_probs_value.setMaximumWidth(500)
 
         self.stats_layout = QtWidgets.QHBoxLayout()
         self.stats_layout.setContentsMargins(20, 0, 20, 0)
@@ -709,7 +848,7 @@ class Page10Widget(QtWidgets.QWidget):
         self.stats_layout.addWidget(self.label_probs_value, 1)
         self.stats_layout.addStretch()
 
-        # ===================== 曲线相关结构 =====================
+        # ===================== 曲线相关结构（与 Page2 对齐） =====================
 
         self.max_points = 1000
         self.sample_rate_hz: Optional[float] = None
@@ -729,10 +868,6 @@ class Page10Widget(QtWidgets.QWidget):
         self.active_channels_in_plot: set[int] = set()
         self.channel_colors = ["r", "g", "b", "c", "m", "y", "k"]
 
-        # 扫屏模式 buffer
-        self.sweep_buffers: Dict[int, List[float]] = {}
-        self.sweep_index: Dict[int, int] = {}
-
         self.plot_widget = pg.PlotWidget()
         self.plot_widget.setBackground("w")
         self.plot_widget.showGrid(x=True, y=True, alpha=0.2)
@@ -741,20 +876,21 @@ class Page10Widget(QtWidgets.QWidget):
         self.plot_widget.setYRange(-200, 200)
         self.legend = self.plot_widget.addLegend()
 
+        # 扫屏模式下的竖直指示线
         self.sweep_line: Optional[pg.InfiniteLine] = None
 
-        # 将三行布局和绘图 widget 加入主布局
+        # 布局组合
         self.main_layout.addLayout(self.top_controls_layout)
         self.main_layout.addLayout(self.bottom_controls_layout)
         self.main_layout.addLayout(self.stats_layout)
         self.main_layout.addWidget(self.plot_widget)
 
-        # 默认扫屏模式
+        # 默认走纸模式：2 = 扫屏重写
         self.scroll_mode = 2
         self.combo_scroll_mode.setCurrentIndex(1)
         self.combo_scroll_mode.currentIndexChanged.connect(self.on_scroll_mode_changed)
 
-        # 通道数变化
+        # 通道数变化 -> checkbox
         self.combo_channel_count.currentIndexChanged.connect(self.on_channel_count_changed)
         self.on_channel_count_changed()
 
@@ -770,7 +906,6 @@ class Page10Widget(QtWidgets.QWidget):
         self.label_fs.setFixedWidth(80)
         self.input_fs = QtWidgets.QLineEdit()
         self.input_fs.setFixedWidth(80)
-        # ✅ 这里改回和实际设备一致的 1000Hz，用于画图和保存
         self.input_fs.setPlaceholderText("例如 1000")
         self.input_fs.setText("1000")
 
@@ -833,12 +968,47 @@ class Page10Widget(QtWidgets.QWidget):
             if child_layout is not None:
                 self._clear_layout(child_layout)
 
-    # -------- 解析传感器序列号 --------
+    # -------- 时间展开的小工具函数（完全与 Page2 一致） --------
+
+    def _expand_packet_times(self, packet: EegDataPacket) -> List[float]:
+        """
+        根据当前 sample_rate_hz，将一个包里的采样点展开成逐点时间列表。
+        - 使用与 CSV / Page2 相同的“校正电脑时间轴”（系统时间）。
+        - 约定 packet.system_timestamp 为“本包最后一个采样点”的时间。
+        返回长度 == len(packet.data)。若采样率无效或数据为空则返回 []。
+        """
+        if self.sample_rate_hz is None or self.sample_rate_hz <= 0:
+            return []
+
+        samples = packet.data
+        n = len(samples)
+        if n == 0:
+            return []
+
+        dt_s = 1.0 / self.sample_rate_hz
+
+        # 基准时间：本包“最后一个采样点”的电脑时间
+        base_ts = packet.system_timestamp if packet.system_timestamp > 0 else packet.hardware_timestamp
+
+        if dt_s > 0:
+            # 第一个采样点时间 = 最后一个点时间 - (n-1)*dt
+            t_first = base_ts - (n - 1) * dt_s
+        else:
+            t_first = base_ts
+
+        return [t_first + j * dt_s for j in range(n)]
+
+    # -------- 根据数据帧解析传感器序列号 --------
 
     def _parse_sensor_serial(self, frame_data: bytes) -> str:
+        """
+        根据数据帧解析传感器序列号：
+        示例：使用第 2~4 字节作为 3 字节无符号整数，格式化为 6 位十进制。
+        """
         try:
             if len(frame_data) < 5:
                 return "000000"
+
             raw = (frame_data[2] << 16) | (frame_data[3] << 8) | frame_data[4]
             serial_int = raw & 0xFFFFFF
             serial_str = f"{serial_int:06d}"
@@ -852,9 +1022,11 @@ class Page10Widget(QtWidgets.QWidget):
     def on_channel_count_changed(self):
         self._clear_layout(self.channel_checkbox_layout)
         self.channel_checkboxes.clear()
+
         count = self.combo_channel_count.currentData()
         if count is None:
             count = 3
+
         for ch in range(count):
             cb = QtWidgets.QCheckBox(f"Ch{ch}")
             cb.setChecked(True)
@@ -873,8 +1045,8 @@ class Page10Widget(QtWidgets.QWidget):
         port_str = self.input_port.text().strip()
         fs_str = self.input_fs.text().strip()
 
+        # 开始
         if self.button_1.text() == ButtonStates.start.value:
-            # ===== 开始 =====
             if not ip or not port_str or not fs_str:
                 self.label_1.setText("请输入 IP、端口 和 采样率")
                 self.label_1.setStyleSheet("color: red")
@@ -893,7 +1065,7 @@ class Page10Widget(QtWidgets.QWidget):
                 return
 
             port = int(port_str)
-            self.sample_rate_hz = float(fs_str)  # ✅ 这就是画图用的 fs（建议填 1000Hz）
+            self.sample_rate_hz = float(fs_str)
 
             # 根据采样率估算窗口点数和缓冲长度
             points_for_5s = int(self.sample_rate_hz * self.window_sec)
@@ -918,9 +1090,7 @@ class Page10Widget(QtWidgets.QWidget):
             self.active_channels_in_plot.clear()
             self.last_plot_time = 0.0
 
-            self.sweep_buffers.clear()
-            self.sweep_index.clear()
-
+            # 重置传感器序列号解析标记
             self.sensor_serial = "000003"
             self._sensor_serial_parsed = False
 
@@ -956,10 +1126,14 @@ class Page10Widget(QtWidgets.QWidget):
                 self.receiver.deleteLater()
                 self.receiver = None
 
+            # 创建新的 UdpEegReceiver
             self.receiver = UdpEegReceiver(host=ip, port=port, buffer_size=8192, parent=self)
+
+            # 连接信号
             self.receiver.data_received.connect(self.on_eeg_packet)
             self.receiver.error_occurred.connect(self.on_error)
 
+            # 启动
             try:
                 self.receiver.start()
             except Exception as e:
@@ -985,8 +1159,8 @@ class Page10Widget(QtWidgets.QWidget):
             # 启动推理线程
             self.start_inference()
 
+        # 停止
         elif self.button_1.text() == ButtonStates.stop.value:
-            # ===== 停止 =====
             if self.receiver is not None:
                 self.receiver.stop()
                 self.receiver.deleteLater()
@@ -1024,7 +1198,7 @@ class Page10Widget(QtWidgets.QWidget):
         args.train_configs = "train.yaml"
         args.log_level = "INFO"
 
-        # ✅ 这里设定推理使用的输入采样率，和设备真实采样率一致（1000Hz）
+        # ✅ 推理使用输入采样率，默认与设备一致 1000Hz
         args.incoming_fs = 1000
         args.target_fs = 128
         args.butterworth_order = 4
@@ -1081,7 +1255,7 @@ class Page10Widget(QtWidgets.QWidget):
         if self.args is None or self.inference_model is None:
             return
 
-        # 如果希望推理采样率跟 UI 填写的设备采样率保持一致，可以打开这段
+        # 若希望推理采样率跟 UI 填写一致
         try:
             fs_str = self.input_fs.text().strip()
             if is_valid_sample_rate(fs_str):
@@ -1218,87 +1392,52 @@ class Page10Widget(QtWidgets.QWidget):
 
         self.logger.info("Inference thread stopped.")
 
-    # -------- EEG 数据回调：画图 + 保存 + 推理队列 --------
+    # -------- EEG 数据回调：画图 + 保存 + 推理队列（Page2 风格） --------
 
     def on_eeg_packet(self, packet: EegDataPacket):
         """
-        注意：
-        - 画图和保存走 self.sample_rate_hz（UI 里填写，建议 1000Hz）
-        - 推理走 self.shared_queue → EEGBufferProcessor（再在里面降采样到 target_fs）
+        收到 UdpEegReceiver 解析好的 EegDataPacket
+        - packet.hardware_timestamp：片上时间（秒）
+        - packet.system_timestamp：经过 ActualTimeRegulator 校正后的电脑时间（秒）
+        当前绘图和保存都以“校正后的电脑时间轴”为准（packet.system_timestamp 展开）。
+        画图逻辑完全按 Page2，另额外把 packet 丢给推理队列 shared_queue。
         """
         if self.sample_rate_hz is None or self.sample_rate_hz <= 0:
             return
 
         ch = packet.channel
 
-        # 第一次解析传感器序列号
+        # 第一次收到数据时，解析传感器序列号
         if (not self._sensor_serial_parsed) and packet.raw_packet:
             self.sensor_serial = self._parse_sensor_serial(packet.raw_packet)
             self._sensor_serial_parsed = True
             print(f"数据来自传感器序列号: {self.sensor_serial}")
 
-        # 保存 CSV
+        # 保存数据
         if self.is_saving:
             self._save_packet_samples(packet)
 
-        # 初始化通道曲线
+        # 初始化通道数据结构和曲线
         if ch not in self.channel_data_x:
             self.channel_data_x[ch] = deque(maxlen=self.max_points)
             self.channel_data_y[ch] = deque(maxlen=self.max_points)
             self.channel_sample_index[ch] = 0
+
             color = self.channel_colors[len(self.channel_curves) % len(self.channel_colors)]
             curve = self.plot_widget.plot(pen=color, name=f"Ch {ch}")
             self.channel_curves[ch] = curve
 
-        # 扫屏缓冲
-        if ch not in self.sweep_buffers:
-            self.sweep_buffers[ch] = [float("nan")] * self.window_points
-            self.sweep_index[ch] = 0
-
         self.active_channels_in_plot.add(ch)
 
-        # ------- 画图数据写入（始终使用原始数据，不做重采样） -------
-        if self.scroll_mode == 1:
-            # 滚动窗口：X 轴用“校正后的电脑时间”
-            dt_s = 1.0 / self.sample_rate_hz if self.sample_rate_hz and self.sample_rate_hz > 0 else 0.0
-            samples = packet.data
-            n = len(samples)
-            if n == 0:
-                return
-            base_ts = packet.system_timestamp if packet.system_timestamp > 0 else packet.hardware_timestamp
-            if dt_s > 0:
-                t_first = base_ts - (n - 1) * dt_s
-            else:
-                t_first = base_ts
-            for j, v in enumerate(samples):
-                self.channel_sample_index[ch] += 1
-                t_s = t_first + j * dt_s
-                self.channel_data_x[ch].append(t_s)
-                self.channel_data_y[ch].append(v)
-        else:
-            # 扫屏重写模式：仅根据样点索引写入 buffer，时间轴统一用 sweep_x
-            if self.window_points <= 0:
-                return
-            idx = self.sweep_index[ch]
-            for v in packet.data:
-                self.sweep_buffers[ch][idx] = v
-                idx += 1
-                if idx >= self.window_points:
-                    idx = 0
-                self.channel_sample_index[ch] += 1
-            self.sweep_index[ch] = idx
+        # ===== 使用工具函数展开时间轴（与 Page2 一致） =====
+        times = self._expand_packet_times(packet)
+        if not times:
+            return
 
-        channels_sorted = sorted(self.active_channels_in_plot)
-        visible_channels = []
-        for c in channels_sorted:
-            cb = self.channel_checkboxes.get(c)
-            if cb is None or cb.isChecked():
-                visible_channels.append(c)
-
-        self.label_1.setText(
-            f"{LabelStates.receiving.value} 当前显示通道: {visible_channels}"
-        )
-        self.label_1.setStyleSheet("color: #008000")
+        for t_s, v in zip(times, packet.data):
+            self.channel_sample_index[ch] += 1
+            self.channel_data_x[ch].append(t_s)
+            self.channel_data_y[ch].append(v)
 
         # ------- 推理队列：把原始包扔给 3 秒缓冲池 -------
         try:
@@ -1306,9 +1445,22 @@ class Page10Widget(QtWidgets.QWidget):
         except Exception:
             pass
 
-        # 限制刷新帧率
         now = time.time()
         if now - self.last_plot_time >= self.plot_interval:
+            # 当前显示通道列表
+            channels_sorted = sorted(self.active_channels_in_plot)
+            visible_channels = []
+            for c in channels_sorted:
+                cb = self.channel_checkboxes.get(c)
+                if cb is None or cb.isChecked():
+                    visible_channels.append(c)
+
+            # 只在重绘时更新状态文字 + 颜色
+            self.label_1.setText(
+                f"{LabelStates.receiving.value} 当前显示通道: {visible_channels}"
+            )
+            self.label_1.setStyleSheet("color: #008000")
+
             self.update_plot()
             self.last_plot_time = now
 
@@ -1321,6 +1473,10 @@ class Page10Widget(QtWidgets.QWidget):
             self.stop_saving()
 
     def start_saving(self, save_dir: Optional[str] = None):
+        """
+        开始保存数据：创建 CSV 文件和 markers.csv
+        - save_dir 为 None 时：使用 self.data_dir（默认 "data"）
+        """
         if self.is_saving:
             return
 
@@ -1344,6 +1500,7 @@ class Page10Widget(QtWidgets.QWidget):
         self.channel_save_files.clear()
         self.channel_save_index.clear()
 
+        # 创建 markers.csv
         try:
             marker_path = os.path.join(self.data_dir, "markers.csv")
             self.marker_file = open(marker_path, "w", encoding="utf-8", newline="")
@@ -1377,6 +1534,11 @@ class Page10Widget(QtWidgets.QWidget):
         self.button_save.setText("开始保存数据")
 
     def _save_packet_samples(self, packet: EegDataPacket):
+        """
+        将一个 EegDataPacket 中的每个采样点写入对应通道的 CSV，
+        时间轴按“校正后的电脑时间（system_timestamp）+ 采样率”展开。
+        使用与绘图相同的 _expand_packet_times，保证 CSV 时间轴与绘图一致。
+        """
         ch = packet.channel
 
         if ch not in self.channel_save_files:
@@ -1393,28 +1555,18 @@ class Page10Widget(QtWidgets.QWidget):
 
         f = self.channel_save_files[ch]
 
-        if self.sample_rate_hz and self.sample_rate_hz > 0:
-            dt_s = 1.0 / self.sample_rate_hz
-        else:
-            dt_s = 0.0
-
-        samples = packet.data
-        n = len(samples)
-        if n == 0:
+        # 使用同一套时间展开逻辑，保证 CSV 时间轴与绘图一致
+        times = self._expand_packet_times(packet)
+        if not times:
             return
 
-        base_ts = packet.system_timestamp if packet.system_timestamp > 0 else packet.hardware_timestamp
-        if dt_s > 0:
-            t_first = base_ts - (n - 1) * dt_s
-        else:
-            t_first = base_ts
-
+        samples = packet.data
         idx = self.channel_save_index.get(ch, 0)
 
-        for j, v in enumerate(samples):
-            t_s = t_first + j * dt_s
+        for t_s, v in zip(times, samples):
             f.write(f"{t_s:.6f},{v:.6f}\n")
 
+            # 简单示例：在 ch==0 的每个点写一个 marker=0（你后面可以按需要修改逻辑）
             if ch == 0 and self.marker_file is not None:
                 self.marker_file.write(f"{t_s:.6f},0\n")
 
@@ -1439,99 +1591,118 @@ class Page10Widget(QtWidgets.QWidget):
                 return False
         return self.receiver.running
 
+    # -------- 重置 y 轴范围 --------
+
     def reset_y_axis_range(self):
         self.plot_widget.setYRange(-200, 200)
 
-    # -------- 画图更新 --------
+    # -------- 画图：两种走纸方式 + 可选 1/5 降采样（完全拷贝 Page2） --------
 
     def update_plot(self):
         if not self.channel_curves:
             return
 
-        downsample = self.checkbox_downsample_plot.isChecked()
+        # 1. 统一获取需要的数据，避免多次查询
+        # 将 deque 转换为 numpy array 是加速的第一步
+        data_map = {}
+        t_max = 0.0
 
-        # 模式1：滚动窗口（X 轴为“校正后的电脑时间”）
+        # 筛选出需要绘制的通道
+        visible_channels = []
+        for ch, curve in self.channel_curves.items():
+            cb = self.channel_checkboxes.get(ch)
+            if cb is not None and cb.isChecked():
+                # 检查数据是否为空
+                if self.channel_data_x[ch]:
+                    visible_channels.append((ch, curve))
+                    t_max = max(t_max, self.channel_data_x[ch][-1])
+            else:
+                curve.setVisible(False)
+
+        if not visible_channels:
+            return
+
+        window = self.window_sec
+        downsample = self.checkbox_downsample_plot.isChecked()
+        step = self.plot_downsample_step if downsample else 1
+
+        # ================= Mode 1: 滚动窗口 (Scrolling) =================
         if self.scroll_mode == 1:
             if self.sweep_line is not None:
                 self.sweep_line.setVisible(False)
 
-            x_max = None
+            # 更新 X 轴范围
+            min_x = t_max - window
+            if min_x < 0:
+                min_x = 0
+            self.plot_widget.setXRange(min_x, max(min_x + window, 0.001), padding=0)
 
-            for ch, curve in self.channel_curves.items():
-                x_deque = self.channel_data_x.get(ch)
-                y_deque = self.channel_data_y.get(ch)
-                if not x_deque or not y_deque:
-                    continue
+            for ch, curve in visible_channels:
+                curve.setVisible(True)
 
-                cb = self.channel_checkboxes.get(ch)
-                if cb is not None and not cb.isChecked():
-                    curve.setVisible(False)
-                    continue
-                else:
-                    curve.setVisible(True)
+                # 转为 numpy 数组
+                x_arr = np.array(self.channel_data_x[ch])
+                y_arr = np.array(self.channel_data_y[ch])
 
-                x_data = list(x_deque)
-                y_data = list(y_deque)
+                # 降采样 (切片操作在 numpy 中是瞬时的)
+                if step > 1:
+                    x_arr = x_arr[::step]
+                    y_arr = y_arr[::step]
 
-                if downsample and len(x_data) > 1:
-                    step = self.plot_downsample_step
-                    x_plot = x_data[::step]
-                    y_plot = y_data[::step]
-                else:
-                    x_plot = x_data
-                    y_plot = y_data
+                # 直接设置数据，pyqtgraph 处理 numpy 极快
+                curve.setData(x_arr, y_arr)
 
-                curve.setData(x=x_plot, y=y_plot)
-
-                if x_plot:
-                    last_x = x_plot[-1]
-                    if x_max is None or last_x > x_max:
-                        x_max = last_x
-
-            if x_max is None:
-                return
-
-            window = self.window_sec
-            if x_max <= window:
-                self.plot_widget.setXRange(0, window)
-            else:
-                self.plot_widget.setXRange(x_max - window, x_max)
-
-        # 模式2：扫屏重写
+        # ================= Mode 2: 扫屏重写 (Sweep / Oscilloscope) =================
         else:
-            self.plot_widget.setXRange(0, self.window_sec)
-
-            for ch, curve in self.channel_curves.items():
-                buf = self.sweep_buffers.get(ch)
-                if buf is None or len(buf) == 0:
-                    continue
-
-                cb = self.channel_checkboxes.get(ch)
-                if cb is not None and not cb.isChecked():
-                    curve.setVisible(False)
-                    continue
-                else:
-                    curve.setVisible(True)
-
-                if downsample and len(buf) > 1:
-                    step = self.plot_downsample_step
-                    x_plot = self.sweep_x[::step]
-                    y_plot = buf[::step]
-                else:
-                    x_plot = self.sweep_x
-                    y_plot = buf
-
-                curve.setData(x=x_plot, y=y_plot)
-
-            # 更新竖直指示线位置
             if self.sweep_line is not None:
                 self.sweep_line.setVisible(True)
-                if self.sweep_index and self.window_points > 0:
-                    idx = next(iter(self.sweep_index.values()))
-                    last_idx = (idx - 1) % self.window_points
-                    if 0 <= last_idx < len(self.sweep_x):
-                        x_pos = self.sweep_x[last_idx]
-                        self.sweep_line.setValue(x_pos)
+                line_pos = t_max % window
+                self.sweep_line.setValue(line_pos)
+
+            # 固定 X 轴
+            self.plot_widget.setXRange(0, window, padding=0)
+
+            # 计算有效时间起点
+            start_valid_time = t_max - window
+
+            for ch, curve in visible_channels:
+                curve.setVisible(True)
+
+                x_arr = np.array(self.channel_data_x[ch])
+                y_arr = np.array(self.channel_data_y[ch])
+
+                # 1. 过滤：只取最近 window 秒的数据
+                mask = x_arr > start_valid_time
+                x_roi = x_arr[mask]
+                y_roi = y_arr[mask]
+
+                if len(x_roi) == 0:
+                    curve.setData([], [])
+                    continue
+
+                # 2. 降采样
+                if step > 1:
+                    x_roi = x_roi[::step]
+                    y_roi = y_roi[::step]
+
+                # 3. 向量化计算取模 (扫屏的核心优化)
+                x_mod = x_roi % window
+
+                # 4. 处理回绕 (Wrap-around) 断点
+                diffs = np.diff(x_mod)
+                wrap_indices = np.where(diffs < 0)[0]
+
+                if len(wrap_indices) > 0:
+                    # 回绕处插入 NaN 来断开连线
+                    insert_idx = wrap_indices + 1
+                    x_draw = np.insert(x_mod, insert_idx, np.nan)
+                    y_draw = np.insert(y_roi, insert_idx, np.nan)
+                else:
+                    x_draw = x_mod
+                    y_draw = y_roi
+
+                # connect="finite" 配合 numpy 的 NaN 使用
+                curve.setData(x_draw, y_draw, connect="finite")
 
     # -------- 轮询推理结果，更新 UI --------
 
@@ -1562,7 +1733,6 @@ class Page10Widget(QtWidgets.QWidget):
 
         # 更新类别概率显示（单行）
         if isinstance(probs, dict) and probs:
-            # 按类别名排序，拼成一行
             parts = [f"{cls}: {p:.3f}" for cls, p in sorted(probs.items(), key=lambda x: x[0])]
             self.label_probs_value.setText(" | ".join(parts))
         else:
@@ -1575,8 +1745,10 @@ class Page10Widget(QtWidgets.QWidget):
             self.receiver.stop()
             self.receiver.deleteLater()
             self.receiver = None
+
         if self.is_saving:
             self.stop_saving()
+
         self.stop_inference()
         event.accept()
 
@@ -1591,8 +1763,3 @@ if __name__ == "__main__":
     w.resize(1000, 700)
     w.show()
     sys.exit(app.exec())
-
-
-# 这是我目前page10的代码，你帮我把page10的代码接收数据，画图的形式，改的跟page2一样，同时也要加入模拟网络不稳定相关参数（默认开启丢包）的代码，
-
-# 你认真改，把修改完后的完整代码展示给我
