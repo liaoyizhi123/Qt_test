@@ -1,19 +1,20 @@
 import os
-import enum
 import re
-import socket
-import threading
+import enum
 import time
-import queue
 import struct
+import socket
+import random
 import logging
+import threading
+import numpy as np
 from collections import deque
-from dataclasses import dataclass
 from typing import List, Optional
+from dataclasses import dataclass
 
+import pyqtgraph as pg
 from PyQt6 import QtWidgets
 from PyQt6.QtCore import Qt, QObject, pyqtSignal
-import pyqtgraph as pg
 
 
 # ====================== 状态枚举 ======================
@@ -167,7 +168,6 @@ class UdpEegReceiver(QObject):
         self.buffer_size = buffer_size
         self.socket: Optional[socket.socket] = None
         self.running = False
-        self.data_queue: queue.Queue[EegDataPacket] = queue.Queue()
         self.packet_count = 0
         self.active_channels = set()
         self.logger = logging.getLogger("UdpEegReceiver")
@@ -188,6 +188,12 @@ class UdpEegReceiver(QObject):
 
         # 会话起点，用于生成“电脑时间轴” received_at
         self._start_monotonic: float | None = None
+
+        # ====== 模拟网络不稳定相关参数（默认开启丢包）======
+        self.enable_loss_simulation = False   # 是否开启模拟丢包
+        self.loss_rate = 0.6                 # 丢包比例（0~1）
+        self.enable_jitter_simulation = False  # 是否模拟随机延迟
+        self.jitter_max_delay = 0.05           # 最大延迟秒数
 
     def get_last_hw_timestamp(self) -> Optional[float]:
         """返回最近一次接收到的数据包的片上时间戳（秒）。如果还没有收到任何数据则返回 None。"""
@@ -276,6 +282,16 @@ class UdpEegReceiver(QObject):
         while self.running:
             try:
                 data, addr = self.socket.recvfrom(self.buffer_size)
+
+                # ---- (可选) 模拟网络抖动：随机延迟一小段时间 ----
+                if self.enable_jitter_simulation and self.jitter_max_delay > 0:
+                    time.sleep(random.uniform(0, self.jitter_max_delay))
+
+                # ---- (可选) 模拟 UDP 丢包：随机丢弃整个 datagram ----
+                if self.enable_loss_simulation and random.random() < self.loss_rate:
+                    self.logger.warning("【模拟丢包】随机丢弃 1 个 UDP datagram")
+                    continue
+
                 system_ts_wall = time.time()  # 真正的电脑时间（用于日志）
                 if self._start_monotonic is not None:
                     recv_elapsed = time.monotonic() - self._start_monotonic
@@ -355,7 +371,7 @@ class UdpEegReceiver(QObject):
                     self.error_occurred.emit(f"接收数据时出错: {e}")
 
     def _emit_packet(self, packet: EegDataPacket):
-        """将排序好的包发给上层（队列 + signal）"""
+        """将排序好的包发给上层（通过 signal）"""
         self.packet_count += 1
         self.active_channels.add(packet.channel)
 
@@ -363,7 +379,7 @@ class UdpEegReceiver(QObject):
         if packet.system_timestamp > 0:
             self._last_regulated_ts = packet.system_timestamp
 
-        self.data_queue.put(packet)
+        # 直接通过信号发给上层
         self.data_received.emit(packet)
 
     # -------- C# 风格 UDP 解包 --------
@@ -498,39 +514,6 @@ class UdpEegReceiver(QObject):
         except Exception as e:
             self.logger.error(f"解析单通道数据帧失败: {e}")
             return None
-
-    # ===== 辅助方法（给上层使用） =====
-
-    def get_latest_data(self) -> Optional[EegDataPacket]:
-        try:
-            return self.data_queue.get_nowait()
-        except queue.Empty:
-            return None
-
-    def get_all_data(self) -> List[EegDataPacket]:
-        packets: List[EegDataPacket] = []
-        while True:
-            packet = self.get_latest_data()
-            if packet is None:
-                break
-            packets.append(packet)
-        return packets
-
-    def get_packet_count(self) -> int:
-        return self.packet_count
-
-    def get_queue_size(self) -> int:
-        return self.data_queue.qsize()
-
-    def get_active_channels(self) -> List[int]:
-        return sorted(list(self.active_channels))
-
-    def clear_queue(self):
-        while not self.data_queue.empty():
-            try:
-                self.data_queue.get_nowait()
-            except queue.Empty:
-                break
 
 
 # ====================== Page2：使用新的 UdpEegReceiver ======================
@@ -721,7 +704,7 @@ class Page2Widget(QtWidgets.QWidget):
         self.active_channels_in_plot: set[int] = set()
         self.channel_colors = ["r", "g", "b", "c", "m", "y", "k"]
 
-        # 扫屏模式 buffer
+        # 旧扫屏模式用的 buffer/index，保留属性但不再使用
         self.sweep_buffers: dict[int, List[float]] = {}
         self.sweep_index: dict[int, int] = {}
 
@@ -796,6 +779,36 @@ class Page2Widget(QtWidgets.QWidget):
                 widget.deleteLater()
             if child_layout is not None:
                 self._clear_layout(child_layout)
+
+    # -------- 时间展开的小工具函数 --------
+
+    def _expand_packet_times(self, packet: EegDataPacket) -> List[float]:
+        """
+        根据当前 sample_rate_hz，将一个包里的采样点展开成逐点时间列表。
+        - 使用与 CSV / Page4 相同的“校正电脑时间轴”（系统时间）。
+        - 约定 packet.system_timestamp 为“本包最后一个采样点”的时间。
+        返回长度 == len(packet.data)。若采样率无效或数据为空则返回 []。
+        """
+        if self.sample_rate_hz is None or self.sample_rate_hz <= 0:
+            return []
+
+        samples = packet.data
+        n = len(samples)
+        if n == 0:
+            return []
+
+        dt_s = 1.0 / self.sample_rate_hz
+
+        # 基准时间：本包“最后一个采样点”的电脑时间
+        base_ts = packet.system_timestamp if packet.system_timestamp > 0 else packet.hardware_timestamp
+
+        if dt_s > 0:
+            # 第一个采样点时间 = 最后一个点时间 - (n-1)*dt
+            t_first = base_ts - (n - 1) * dt_s
+        else:
+            t_first = base_ts
+
+        return [t_first + j * dt_s for j in range(n)]
 
     # -------- 根据数据帧解析传感器序列号 --------
 
@@ -1011,48 +1024,17 @@ class Page2Widget(QtWidgets.QWidget):
             curve = self.plot_widget.plot(pen=color, name=f"Ch {ch}")
             self.channel_curves[ch] = curve
 
-        # 扫屏模式缓冲区初始化
-        if ch not in self.sweep_buffers:
-            self.sweep_buffers[ch] = [float("nan")] * self.window_points
-            self.sweep_index[ch] = 0
-
         self.active_channels_in_plot.add(ch)
 
-        # 写入绘图缓存
-        if self.scroll_mode == 1:
-            # 滚动窗口：使用“校正后的电脑时间轴”作为 X 轴
-            dt_s = 1.0 / self.sample_rate_hz if self.sample_rate_hz and self.sample_rate_hz > 0 else 0.0
-            samples = packet.data
-            n = len(samples)
-            if n == 0:
-                return
+        # ===== 使用工具函数展开时间轴 =====
+        times = self._expand_packet_times(packet)
+        if not times:
+            return
 
-            # base_ts 约定为本包“最后一个采样点”的时间
-            base_ts = packet.system_timestamp if packet.system_timestamp > 0 else packet.hardware_timestamp
-
-            if dt_s > 0:
-                # 第一采样点的时间 = 最后一个点时间 - (n-1)*dt
-                t_first = base_ts - (n - 1) * dt_s
-            else:
-                t_first = base_ts
-
-            for j, v in enumerate(samples):
-                self.channel_sample_index[ch] += 1
-                t_s = t_first + j * dt_s
-                self.channel_data_x[ch].append(t_s)
-                self.channel_data_y[ch].append(v)
-        else:
-            # 扫屏重写（这里仍使用“样点索引”驱动扫屏，时间轴用统一的 sweep_x）
-            if self.window_points <= 0:
-                return
-            idx = self.sweep_index[ch]
-            for v in packet.data:
-                self.sweep_buffers[ch][idx] = v
-                idx += 1
-                if idx >= self.window_points:
-                    idx = 0
-                self.channel_sample_index[ch] += 1
-            self.sweep_index[ch] = idx
+        for t_s, v in zip(times, packet.data):
+            self.channel_sample_index[ch] += 1
+            self.channel_data_x[ch].append(t_s)
+            self.channel_data_y[ch].append(v)
 
         # 当前显示通道列表
         channels_sorted = sorted(self.active_channels_in_plot)
@@ -1062,13 +1044,14 @@ class Page2Widget(QtWidgets.QWidget):
             if cb is None or cb.isChecked():
                 visible_channels.append(c)
 
-        self.label_1.setText(
-            f"{LabelStates.receiving.value} 当前显示通道: {visible_channels}"
-        )
-        self.label_1.setStyleSheet("color: #008000")
-
         now = time.time()
         if now - self.last_plot_time >= self.plot_interval:
+            # 只在重绘时更新状态文字 + 颜色
+            self.label_1.setText(
+                f"{LabelStates.receiving.value} 当前显示通道: {visible_channels}"
+            )
+            self.label_1.setStyleSheet("color: #008000")
+
             self.update_plot()
             self.last_plot_time = now
 
@@ -1162,28 +1145,15 @@ class Page2Widget(QtWidgets.QWidget):
 
         f = self.channel_save_files[ch]
 
-        if self.sample_rate_hz and self.sample_rate_hz > 0:
-            dt_s = 1.0 / self.sample_rate_hz
-        else:
-            dt_s = 0.0
-
-        samples = packet.data
-        n = len(samples)
-        if n == 0:
+        # 使用同一套时间展开逻辑，保证 CSV 时间轴与绘图一致
+        times = self._expand_packet_times(packet)
+        if not times:
             return
 
-        # 基准时间：本包“最后一个采样点”的电脑时间
-        base_ts = packet.system_timestamp if packet.system_timestamp > 0 else packet.hardware_timestamp
-
-        if dt_s > 0:
-            t_first = base_ts - (n - 1) * dt_s
-        else:
-            t_first = base_ts
-
+        samples = packet.data
         idx = self.channel_save_index.get(ch, 0)
 
-        for j, v in enumerate(samples):
-            t_s = t_first + j * dt_s
+        for t_s, v in zip(times, samples):
             f.write(f"{t_s:.6f},{v:.6f}\n")
 
             # 简单示例：在 ch==0 的每个点写一个 marker=0（你后面可以按需要修改逻辑）
@@ -1253,90 +1223,115 @@ class Page2Widget(QtWidgets.QWidget):
         if not self.channel_curves:
             return
 
-        downsample = self.checkbox_downsample_plot.isChecked()
+        # 1. 统一获取需要的数据，避免多次查询
+        # 将 deque 转换为 numpy array 是加速的第一步
+        # 即使这里有一次拷贝，后续的数学运算也比 Python 循环快得多
+        data_map = {}
+        t_max = 0.0
+        
+        # 筛选出需要绘制的通道
+        visible_channels = []
+        for ch, curve in self.channel_curves.items():
+            cb = self.channel_checkboxes.get(ch)
+            if cb is not None and cb.isChecked():
+                # 检查数据是否为空
+                if self.channel_data_x[ch]:
+                    visible_channels.append((ch, curve))
+                    t_max = max(t_max, self.channel_data_x[ch][-1])
+            else:
+                curve.setVisible(False)
+        
+        if not visible_channels:
+            return
 
-        # 模式1：滚动窗口（X 轴为“校正后的电脑时间”）
+        window = self.window_sec
+        downsample = self.checkbox_downsample_plot.isChecked()
+        step = self.plot_downsample_step if downsample else 1
+
+        # ================= Mode 1: 滚动窗口 (Scrolling) =================
         if self.scroll_mode == 1:
             if self.sweep_line is not None:
                 self.sweep_line.setVisible(False)
 
-            x_max = None
+            # 更新 X 轴范围
+            min_x = t_max - window
+            if min_x < 0: min_x = 0
+            self.plot_widget.setXRange(min_x, max(min_x + window, 0.001), padding=0)
 
-            for ch, curve in self.channel_curves.items():
-                x_deque = self.channel_data_x.get(ch)
-                y_deque = self.channel_data_y.get(ch)
-                if not x_deque or not y_deque:
-                    continue
+            for ch, curve in visible_channels:
+                curve.setVisible(True)
+                
+                # 转为 numpy 数组
+                x_arr = np.array(self.channel_data_x[ch])
+                y_arr = np.array(self.channel_data_y[ch])
 
-                cb = self.channel_checkboxes.get(ch)
-                if cb is not None and not cb.isChecked():
-                    curve.setVisible(False)
-                    continue
-                else:
-                    curve.setVisible(True)
+                # 降采样 (切片操作在 numpy 中是瞬时的)
+                if step > 1:
+                    x_arr = x_arr[::step]
+                    y_arr = y_arr[::step]
+                
+                # 直接设置数据，pyqtgraph 处理 numpy 极快
+                curve.setData(x_arr, y_arr)
 
-                x_data = list(x_deque)
-                y_data = list(y_deque)
-
-                if downsample and len(x_data) > 1:
-                    step = self.plot_downsample_step
-                    x_plot = x_data[::step]
-                    y_plot = y_data[::step]
-                else:
-                    x_plot = x_data
-                    y_plot = y_data
-
-                curve.setData(x=x_plot, y=y_plot)
-
-                if x_plot:
-                    last_x = x_plot[-1]
-                    if x_max is None or last_x > x_max:
-                        x_max = last_x
-
-            if x_max is None:
-                return
-
-            window = self.window_sec
-            if x_max <= window:
-                self.plot_widget.setXRange(0, window)
-            else:
-                self.plot_widget.setXRange(x_max - window, x_max)
-
-        # 模式2：扫屏重写
+        # ================= Mode 2: 扫屏重写 (Sweep / Oscilloscope) =================
         else:
-            self.plot_widget.setXRange(0, self.window_sec)
-
-            for ch, curve in self.channel_curves.items():
-                buf = self.sweep_buffers.get(ch)
-                if buf is None or len(buf) == 0:
-                    continue
-
-                cb = self.channel_checkboxes.get(ch)
-                if cb is not None and not cb.isChecked():
-                    curve.setVisible(False)
-                    continue
-                else:
-                    curve.setVisible(True)
-
-                if downsample and len(buf) > 1:
-                    step = self.plot_downsample_step
-                    x_plot = self.sweep_x[::step]
-                    y_plot = buf[::step]
-                else:
-                    x_plot = self.sweep_x
-                    y_plot = buf
-
-                curve.setData(x=x_plot, y=y_plot)
-
-            # 更新竖直指示线位置：选任意一个通道的 sweep_index
             if self.sweep_line is not None:
                 self.sweep_line.setVisible(True)
-                if self.sweep_index and self.window_points > 0:
-                    idx = next(iter(self.sweep_index.values()))
-                    last_idx = (idx - 1) % self.window_points
-                    if 0 <= last_idx < len(self.sweep_x):
-                        x_pos = self.sweep_x[last_idx]
-                        self.sweep_line.setValue(x_pos)
+                line_pos = t_max % window
+                self.sweep_line.setValue(line_pos)
+
+            # 固定 X 轴
+            self.plot_widget.setXRange(0, window, padding=0)
+            
+            # 计算有效时间起点
+            start_valid_time = t_max - window
+
+            for ch, curve in visible_channels:
+                curve.setVisible(True)
+
+                x_arr = np.array(self.channel_data_x[ch])
+                y_arr = np.array(self.channel_data_y[ch])
+
+                # 1. 过滤：只取最近 window 秒的数据
+                # 使用 numpy 布尔索引，比列表推导式快
+                mask = x_arr > start_valid_time
+                x_roi = x_arr[mask]
+                y_roi = y_arr[mask]
+                
+                if len(x_roi) == 0:
+                    curve.setData([], [])
+                    continue
+
+                # 2. 降采样
+                if step > 1:
+                    x_roi = x_roi[::step]
+                    y_roi = y_roi[::step]
+
+                # 3. 向量化计算取模 (扫屏的核心优化)
+                # 直接对整个数组进行取模运算
+                x_mod = x_roi % window
+
+                # 4. 处理回绕 (Wrap-around) 断点
+                # 找到当前点比前一个点小的地方 (说明跨越了窗口右边界回到左边)
+                # diff < 0 的位置就是回绕点
+                diffs = np.diff(x_mod)
+                # np.where 返回的是 tuple
+                wrap_indices = np.where(diffs < 0)[0]
+                
+                if len(wrap_indices) > 0:
+                    # 我们需要在回绕处插入 NaN 来断开连线
+                    # 索引 + 1 是因为 diff 的长度比原数组少 1，且我们要插在突变点之后
+                    insert_idx = wrap_indices + 1
+                    
+                    # 插入 NaN
+                    x_draw = np.insert(x_mod, insert_idx, np.nan)
+                    y_draw = np.insert(y_roi, insert_idx, np.nan)
+                else:
+                    x_draw = x_mod
+                    y_draw = y_roi
+
+                # connect="finite" 配合 numpy 的 NaN 使用，性能最佳
+                curve.setData(x_draw, y_draw, connect="finite")
 
     # -------- 生命周期清理 --------
 
@@ -1362,5 +1357,4 @@ if __name__ == "__main__":
     w.resize(1000, 700)
     w.show()
     sys.exit(app.exec())
-
 

@@ -1,3 +1,4 @@
+import torch
 import sys
 from datetime import datetime
 from PyQt6 import QtCore, QtGui, QtWidgets
