@@ -554,7 +554,7 @@ class Page2Widget(QtWidgets.QWidget):
 
         # ---------- 端口 ----------
         self.label_port = QtWidgets.QLabel("端口：")
-        self.label_port.setFixedHeight(28)
+        # self.label_port.setFixedHeight(28)
         self.label_port.setSizePolicy(
             QtWidgets.QSizePolicy.Policy.Fixed,
             QtWidgets.QSizePolicy.Policy.Fixed,
@@ -573,8 +573,8 @@ class Page2Widget(QtWidgets.QWidget):
 
         # ---------- 通道数 ----------
         self.label_channel_count = QtWidgets.QLabel("通道数：")
-        self.label_channel_count.setFixedWidth(60)
-        self.label_channel_count.setFixedHeight(28)
+        # self.label_channel_count.setFixedWidth(60)
+        # self.label_channel_count.setFixedHeight(28)
 
         self.combo_channel_count = QtWidgets.QComboBox()
         self.combo_channel_count.setFixedWidth(80)
@@ -589,7 +589,11 @@ class Page2Widget(QtWidgets.QWidget):
 
         # ---------- 显示通道（checkbox） ----------
         self.label_show_channels = QtWidgets.QLabel("显示通道：")
-        self.label_show_channels.setFixedHeight(28)
+        # self.label_show_channels.setFixedHeight(28)
+        self.label_show_channels.setSizePolicy(
+            QtWidgets.QSizePolicy.Policy.Fixed,
+            QtWidgets.QSizePolicy.Policy.Fixed,
+        )
 
         self.channel_checkbox_layout = QtWidgets.QHBoxLayout()
         self.channel_checkbox_layout.setContentsMargins(0, 0, 0, 0)
@@ -614,7 +618,7 @@ class Page2Widget(QtWidgets.QWidget):
 
         # ---------- 走纸方式 ----------
         self.label_scroll_mode = QtWidgets.QLabel("走纸方式：")
-        self.label_scroll_mode.setFixedHeight(28)
+        # self.label_scroll_mode.setFixedHeight(28)
 
         self.combo_scroll_mode = QtWidgets.QComboBox()
         self.combo_scroll_mode.setFixedWidth(120)
@@ -668,7 +672,7 @@ class Page2Widget(QtWidgets.QWidget):
         # 状态标签
         self.label_1 = QtWidgets.QLabel(LabelStates.stopped.value)
         self.label_1.setFixedWidth(360)
-        self.label_1.setFixedHeight(28)
+        # self.label_1.setFixedHeight(28)
         self.label_1.setStyleSheet("color: #5d5d5d")
 
         self.bottom_controls_layout = QtWidgets.QHBoxLayout()
