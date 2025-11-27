@@ -46,19 +46,19 @@ QPushButton[spread="true"] {
 /* ================= 左侧导航栏按钮（通过属性控制） ================= */
 
 #left_center QPushButton[nav="true"] {
-    background-color: #e9f2ff;      /* 默认浅蓝卡片底色 */
+    background-color: #e7f1fe;      /* 默认浅蓝卡片底色 */
     color: transparent;             /* 文本透明，只显示图标 */
     min-height: 50px;
     max-height: 50px;
     padding: 0px 8px;
     margin: 6px 10px 6px 6px;
     border-radius: 10px;            /* 四边圆角 */
-    border: 1px solid #d1d9e6;      /* 略偏蓝的浅灰边框 */
+    
 }
 
 /* 普通 nav 按钮 hover 效果：稍微加深一点 */
 #left_center QPushButton[nav="true"]:hover {
-    background-color: #ccdcfcff;    /* 比默认更深一点 */
+    background-color: #dceafe;    /* 比默认更深一点 */
 }
 
 /* 按下效果：再深一点（可选） */
@@ -81,7 +81,7 @@ QPushButton[spread="true"] {
 
 /* 按钮：统一成柔和卡片风格 */
 #stackedWidget QPushButton {
-    background-color: #e9f2ff;           /* 🌟浅蓝灰卡片底色 */
+    background-color: #e7f1fe;           /* 🌟浅蓝灰卡片底色 */
     color: #333333;                      /* 深灰文字 */
     border-radius: 10px;                 /* 圆角 */
     /* border: 1px solid #d1d9e6;            略微偏蓝的浅灰边框 */
@@ -92,7 +92,7 @@ QPushButton[spread="true"] {
 
 /* 鼠标悬停效果：更亮一点 */
 #stackedWidget QPushButton:hover {
-    background-color: #ccdcfcff;           /* 稍亮一点的蓝白色 */
+    background-color: #dceafe;           /* 稍亮一点的蓝白色 */
 }
 
 /* 按下效果：稍微压暗一点 */
