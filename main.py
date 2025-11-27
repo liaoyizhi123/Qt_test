@@ -13,7 +13,9 @@ from page6_ma import Page6Widget
 from page7_mill import Page7Widget
 from page8_miul import Page8Widget
 from page9_eye import Page9Widget
-from page10_realtime import Page10Widget  # FIXME.
+from page10_realtime import Page10Widget  
+from page11_pupil import Page11Widget
+# FIXME.
 
 
 class Ui_MainWindow(QMainWindow):
@@ -261,6 +263,17 @@ class Ui_MainWindow(QMainWindow):
         self.btn_lef_realtime.setIconSize(QtCore.QSize(32, 32))
         self.btn_lef_realtime.setObjectName("btn_lef_realtime")
         self.verticalLayout_8.addWidget(self.btn_lef_realtime)
+        # 瞳孔
+        self.btn_lef_pupil = QtWidgets.QPushButton(parent=self.left_center)
+        self.btn_lef_pupil.setMinimumSize(QtCore.QSize(0, 50))
+        self.btn_lef_pupil.setMaximumSize(QtCore.QSize(16777215, 50))
+        self.btn_lef_pupil.setText("")
+        icon11 = QtGui.QIcon()
+        icon11.addPixmap(QtGui.QPixmap("resources/icons/pupil.png"), QtGui.QIcon.Mode.Normal, QtGui.QIcon.State.Off)
+        self.btn_lef_pupil.setIcon(icon11)
+        self.btn_lef_pupil.setIconSize(QtCore.QSize(32, 32))
+        self.btn_lef_pupil.setObjectName("btn_lef_pupil")
+        self.verticalLayout_8.addWidget(self.btn_lef_pupil) 
         # FIXME.
 
         # ⭐ 统一为导航按钮打上 nav 属性，交给 QSS 控制样式
@@ -275,6 +288,7 @@ class Ui_MainWindow(QMainWindow):
             self.btn_lef_mi_upper,
             self.btn_lef_eye,
             self.btn_lef_realtime, 
+            self.btn_lef_pupil,
         ]
         # FIXME.
         for btn in self.nav_buttons:
@@ -357,6 +371,10 @@ class Ui_MainWindow(QMainWindow):
         self.page_10.eeg_page = self.page_2
         self.stackedWidget.addWidget(self.page_10)
 
+        self.page_11 = Page11Widget(self.stackedWidget)
+        self.page_11.setObjectName("page_11")
+        self.page_11.eeg_page = self.page_2
+        self.stackedWidget.addWidget(self.page_11)
         # FIXME.
 
         self.verticalLayout_9.addWidget(self.stackedWidget)
@@ -380,9 +398,11 @@ class Ui_MainWindow(QMainWindow):
             self.btn_lef_mi_lower,
             self.btn_lef_mi_upper,
             self.btn_lef_eye,
-            self.btn_lef_realtime,  # FIXME.
+            self.btn_lef_realtime, 
+            self.btn_lef_pupil, 
             self.stackedWidget,
         )
+        # FIXME.
 
         # ⭐ 关键：启动时默认展示 Page2（索引 1），并同步更新按钮样式和标题
         self.change_btn_page(1, self.stackedWidget)
@@ -398,9 +418,10 @@ class Ui_MainWindow(QMainWindow):
         btn_lef_mi_lower,
         btn_lef_mi_upper,
         btn_lef_eye,
-        btn_lef_realtime,  # FIXME.
+        btn_lef_realtime,  
+        btn_lef_pupil,
         stackedWidget,
-    ):
+    ): # FIXME.
         btn_lef_home.clicked.connect(lambda: self.change_btn_page(0, stackedWidget))
         btn_lef_new.clicked.connect(lambda: self.change_btn_page(1, stackedWidget))
         btn_lef_save.clicked.connect(lambda: self.change_btn_page(2, stackedWidget))
@@ -410,7 +431,9 @@ class Ui_MainWindow(QMainWindow):
         btn_lef_mi_lower.clicked.connect(lambda: self.change_btn_page(6, stackedWidget))
         btn_lef_mi_upper.clicked.connect(lambda: self.change_btn_page(7, stackedWidget))
         btn_lef_eye.clicked.connect(lambda: self.change_btn_page(8, stackedWidget))
-        btn_lef_realtime.clicked.connect(lambda: self.change_btn_page(9, stackedWidget))  # FIXME.
+        btn_lef_realtime.clicked.connect(lambda: self.change_btn_page(9, stackedWidget))  
+        btn_lef_pupil.clicked.connect(lambda: self.change_btn_page(10, stackedWidget))
+        # FIXME.
         # ⭐ 这里不再设置 currentIndex，避免和 change_btn_page 冲突
         # stackedWidget.setCurrentIndex(1)
 
@@ -459,7 +482,11 @@ class Ui_MainWindow(QMainWindow):
             self.proj_title.setText("睁眼/闭眼实验, 按下【开始实验】，会同时开始记录脑电信号")
         elif current_index == 9:
             self._set_nav_selected(self.btn_lef_realtime, True)
-            self.proj_title.setText("实时脑电数据展示")  # FIXME.
+            self.proj_title.setText("实时脑电数据展示")
+        elif current_index == 10:
+            self._set_nav_selected(self.btn_lef_pupil, True)
+            self.proj_title.setText("瞳孔实验，按下【开始实验】，会同时开始记录脑电信号")
+        # FIXME.
 
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
