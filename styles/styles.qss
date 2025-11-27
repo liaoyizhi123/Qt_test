@@ -115,7 +115,7 @@ QPushButton[spread="true"] {
     border-radius: 10px;
     border: 1px solid #d0d0d0;
     padding: 4px 30px 4px 10px;  /* 右边给箭头预留空间 */
-    min-height: 26px;
+    /* min-height: 26px; */
 }
 
 #stackedWidget QComboBox:hover {
