@@ -1,4 +1,4 @@
-#! /usr/bin/env python  
+#! /usr/bin/env python
 #  -*- coding:utf-8 -*-
 #
 # Author: FANG Junying, fangjunying@neuracle.cn
@@ -8,8 +8,9 @@
 #
 # Copyright (c) 2020 Neuracle, Inc. All Rights Reserved. http://neuracle.cn/
 
-from neuracle_lib.triggerBox import TriggerBox,TriggerIn,PackageSensorPara
+from neuracle_lib.triggerBox import TriggerBox, TriggerIn, PackageSensorPara
 import time
+
 # from psychopy import  visual, event,core
 
 if __name__ == '__main__':
@@ -23,6 +24,8 @@ if __name__ == '__main__':
         triggerin = TriggerIn("COM3")
         # test if device is valid
         flag = triggerin.validate_device()
+        print(flag)
+        exit()
         if flag:
             for i in range(1, 10):
                 triggerin.output_event_data(i)
@@ -33,7 +36,7 @@ if __name__ == '__main__':
     if isTriggerBox:
         ## example send triggers by TriggerBox
         triggerbox = TriggerBox("COM3")
-        for i in range(1,10):
+        for i in range(1, 10):
             print('send trigger: {0}'.format(i))
             triggerbox.output_event_data(i)
             time.sleep(1)
