@@ -2,7 +2,8 @@ import os
 import sys
 import random
 from datetime import datetime
-from PyQt6 import QtCore, QtGui, QtWidgets
+
+from PyQt6 import QtCore, QtWidgets
 from PyQt6.QtWidgets import (
     QApplication,
     QWidget,
@@ -16,6 +17,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QMessageBox,
     QComboBox,
+    QSizePolicy,
 )
 from PyQt6.QtGui import QKeySequence, QShortcut
 
@@ -24,19 +26,28 @@ class Page7Widget(QWidget):
     """
     EEG 实验范式单页组件（4 条 Task：慢走、慢跑、快跑、静止）。
 
-    现在的时间记录逻辑（与 Page4/5/6 一致）：
-    - 点击「开始实验」后立刻调用 Page2.start_saving(run_dir)，由 Page2 持续写 EEG CSV；
-    - 通过 Page2.get_last_eeg_time() 获取与 CSV Time 列一致的“校准后的电脑时间”（秒）；
-    - 对每个 trial 的 Task 激活阶段：
-        在 Task 开始/结束时分别记录 task_start_time / task_end_time，
-        写入 txt 报告的第 1 / 2 列，可以直接与 CSV 中 Time 对齐截取片段；
-    - 实验最后的结束倒计时结束后，调用 Page2.stop_saving()，再写 txt 报告。
+    全屏策略：
+      - 首页保留原来的设置界面，用“卡片”居中展示；
+      - 点击【开始实验】后，隐藏卡片，在一个单独的 fullscreen 窗口里
+        展示实验画面（提示 / 注视十字 / 评估 / 休息等）。
+
+    时间记录逻辑（与 Page4/5/6 一致）：
+      - 点击【开始实验】后调用 Page2.start_saving(run_dir)；
+      - 用 Page2.get_last_eeg_time() 拿到与 CSV Time 一致的时间（秒）；
+      - Task 激活阶段开始/结束时分别写入 task_start_time / task_end_time；
+      - 实验结束 / ESC 中断时调用 Page2.stop_saving()，写 txt 报告。
     """
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("EEG 实验范式")
         self.setMinimumSize(900, 700)
+
+        # 当前系统类型（用于全屏窗口策略）
+        self._is_macos = sys.platform.startswith("darwin")
+        self._is_windows = sys.platform.startswith("win")
+        self.fullscreen_win: QtWidgets.QWidget | None = None
+        self._fs_esc_shortcut: QShortcut | None = None
 
         # ====== MI 数据根目录：data/mill ======
         self.data_root = "data"
@@ -74,17 +85,17 @@ class Page7Widget(QWidget):
         self.name = ""
         self.total_trials = self.default_trials
         self.trial_index = -1
-        self.trial_plan = []
-        self.current_condition = None
+        self.trial_plan: list[str] = []
+        self.current_condition: str | None = None
 
-        self.trial_logs = []
-        self.pending_rating = None
+        self.trial_logs: list[dict] = []
+        self.pending_rating: int | None = None
         self.is_assessing = False
-        self._assess_timer = None
+        self._assess_timer: QtCore.QTimer | None = None
         self._assess_remaining = 0
 
         # Task 1s 倒计时
-        self._task_timer = None
+        self._task_timer: QtCore.QTimer | None = None
         self._task_remaining_secs = 0  # 以 1 秒为单位
 
         # 逻辑时间线（毫秒），仅内部计数使用，不写入报告
@@ -95,33 +106,57 @@ class Page7Widget(QWidget):
         self.scale_labels = self.likert_labels_5
 
         # ===== 与 EEG 采集页面（Page2）联动相关 =====
-        # 主程序中需要手动注入：page7.eeg_page = page2
         self.eeg_page = None
-        # 整个实验的起始/结束时间（与 CSV Time 使用同一“校准电脑时间轴”）
-        self.eeg_exp_start = None
-        self.eeg_exp_end = None
+        self.eeg_exp_start: float | None = None
+        self.eeg_exp_end: float | None = None
 
-        # -------------------- UI --------------------
+        # ====== UI 构建 ======
+        self._current_bg: str | None = None  # stage_label 的背景色
+        self._current_fg: str = "#000000"
+
+        self._build_main_ui()
+        self._build_screen_ui()
+        self._build_shortcuts()
+
+    # ==================== 主界面（首页：表单 + 按钮） ====================
+    def _build_main_ui(self):
         root = QVBoxLayout(self)
+        root.setContentsMargins(40, 30, 40, 30)
+        root.setSpacing(20)
         root.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.root_layout = root
 
+        # 中心卡片：放说明 + 表单 + 按钮
+        self.center_card = QtWidgets.QWidget(self)
+        self.center_card.setObjectName("centerCard")
+        self.center_card.setMaximumWidth(640)
+
+        card_layout = QVBoxLayout(self.center_card)
+        card_layout.setContentsMargins(40, 30, 40, 30)
+        card_layout.setSpacing(20)
+        card_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+
+        # 顶部说明
         self.instruction = QLabel(
             "填写信息后点击开始。\n"
             "阶段：提示 → 任务 → 自我评估 → 休息；\n"
             "自评阶段请使用数字键或点击按钮评分。"
         )
+        self.instruction.setObjectName("instructionLabel")
         f = self.instruction.font()
         f.setPointSize(13)
         self.instruction.setFont(f)
         self.instruction.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.instruction.setWordWrap(True)
-        root.addWidget(self.instruction)
+        card_layout.addWidget(self.instruction)
 
-        # 配置表单
-        settings = QWidget()
-        settings.setMaximumWidth(520)
-        form = QFormLayout(settings)
+        # 配置表单区域
+        self.settings_widget = QtWidgets.QWidget(self.center_card)
+        form = QFormLayout(self.settings_widget)
         form.setFormAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        form.setLabelAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(10)
 
         self.name_input = QLineEdit()
         form.addRow("姓名:", self.name_input)
@@ -132,27 +167,36 @@ class Page7Widget(QWidget):
         self.trials_spin.setValue(self.default_trials)
         form.addRow("循环次数(Trials):", self.trials_spin)
 
-        # 可配置时长
+        # Prompt 时长
         self.prompt_spin = QSpinBox()
         self.prompt_spin.setRange(1, 100)
         self.prompt_spin.setSingleStep(1)
         self.prompt_spin.setValue(int(self.prompt_duration))
         form.addRow("Prompt 时长 (秒):", self.prompt_spin)
 
-        task_box = QHBoxLayout()
+        # Task 时长区间
+        task_widget = QtWidgets.QWidget(self.settings_widget)   # ⭐ 右侧整块容器
+        task_box = QHBoxLayout(task_widget)
+        task_box.setContentsMargins(0, 0, 0, 0)
+        task_box.setSpacing(8)
+
         self.task_min_spin = QSpinBox()
         self.task_min_spin.setRange(1, 120)
         self.task_min_spin.setSingleStep(1)
         self.task_min_spin.setValue(int(self.task_min))
+
         self.task_max_spin = QSpinBox()
         self.task_max_spin.setRange(1, 120)
         self.task_max_spin.setSingleStep(1)
         self.task_max_spin.setValue(int(self.task_max))
-        task_box.addWidget(QLabel("Task 区间 (秒):"))
+
         task_box.addWidget(self.task_min_spin)
         task_box.addWidget(self.task_max_spin)
-        form.addRow(task_box)
 
+        # ⭐ 关键：让 "Task 区间 (秒):" 作为这一行的 label 列，右边整块是 task_widget
+        form.addRow("Task 区间 (秒):", task_widget)
+
+        # 自评与休息时长
         self.assess_spin = QDoubleSpinBox()
         self.assess_spin.setDecimals(0)
         self.assess_spin.setRange(1, 120)
@@ -174,64 +218,122 @@ class Page7Widget(QWidget):
         self.scale_combo.setCurrentIndex(1)  # 默认 5 点量表
         form.addRow("自评量表:", self.scale_combo)
 
+        card_layout.addWidget(self.settings_widget)
+
+        # 开始按钮
         self.start_btn = QPushButton("开始实验")
+        self.start_btn.setObjectName("startButton")
         self.start_btn.clicked.connect(self.on_start_clicked)
+        card_layout.addWidget(self.start_btn, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
 
-        root.addWidget(settings)
-        root.addWidget(self.start_btn, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
+        # 把卡片整体居中
+        root.addStretch()
+        root.addWidget(self.center_card, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
+        root.addStretch()
 
-        # 大显示区
-        self.stage_label = QLabel("")
-        fs = self.stage_label.font()
-        fs.setPointSize(42)
-        self.stage_label.setFont(fs)
-        self.stage_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.stage_label.hide()
-        root.addWidget(self.stage_label)
+        # 主界面基础样式（只给卡片和开始按钮，不影响实验画面）
+        
 
-        self.countdown_label = QLabel("")
-        fc = self.countdown_label.font()
-        fc.setPointSize(32)
-        self.countdown_label.setFont(fc)
-        self.countdown_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.countdown_label.hide()
-        root.addWidget(self.countdown_label)
+    # ==================== 实验显示界面（全屏窗口内容） ====================
+    def _build_screen_ui(self):
+        # screen_container 只用于实验展示，在进入全屏时被放到 fullscreen_win 中
+        self.screen_container = QtWidgets.QWidget(self)
+        self.screen_container.setObjectName("full_screen")
+        self.screen_container.hide()
 
-        # fixation cross（大号 "+"）
-        self.cross_label = QLabel("+")
+        screen_layout = QVBoxLayout(self.screen_container)
+        screen_layout.setContentsMargins(40, 40, 40, 40)
+        screen_layout.setSpacing(18)
+
+        screen_layout.addStretch()
+
+        # 大号注视十字
+        self.cross_label = QLabel("+", self.screen_container)
         fx = self.cross_label.font()
         fx.setPointSize(160)
         fx.setBold(True)
         self.cross_label.setFont(fx)
         self.cross_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.cross_label.hide()
-        root.addWidget(self.cross_label)
+        screen_layout.addWidget(self.cross_label, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
 
-        # Task 阶段倒计时（1s 大号数字）
-        self.task_count_label = QLabel("")
+        # 主文字区域（提示 / 任务 / 自评问题）
+        self.stage_label = QLabel("", self.screen_container)
+        fs = self.stage_label.font()
+        fs.setPointSize(42)
+        self.stage_label.setFont(fs)
+        self.stage_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.stage_label.setWordWrap(True)
+        self.stage_label.setSizePolicy(
+            QSizePolicy.Policy.Preferred,   # 水平方向可扩展
+            QSizePolicy.Policy.Preferred   # 垂直用推荐高度
+        )
+        self.stage_label.setMinimumWidth(800)  # 比如最多 1000 像素宽
+        self.stage_label.hide()
+
+        self.stage_wrapper = QWidget(self.screen_container)
+        h = QHBoxLayout(self.stage_wrapper)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(0)
+
+        h.addStretch()
+        h.addWidget(self.stage_label)
+        h.addStretch()
+
+        # 把 wrapper 加到竖直布局中，不再给 alignment
+        screen_layout.addWidget(self.stage_wrapper)
+
+        # 倒计时文字（初始倒计时 / 结束倒计时 / 休息倒计时）
+        self.countdown_label = QLabel("", self.screen_container)
+        fc = self.countdown_label.font()
+        fc.setPointSize(42)
+        self.countdown_label.setFont(fc)
+        self.countdown_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.countdown_label.hide()
+        screen_layout.addWidget(self.countdown_label, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
+
+        # Task 内 1s 大号数字倒计时（目前可选用）
+        self.task_count_label = QLabel("", self.screen_container)
         ft = self.task_count_label.font()
         ft.setPointSize(48)
         ft.setBold(True)
         self.task_count_label.setFont(ft)
         self.task_count_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.task_count_label.hide()
-        root.addWidget(self.task_count_label)
+        screen_layout.addWidget(self.task_count_label, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
 
-        # 自评按钮（最多 5 个，按量表显示前 N 个）
-        btn_box = QVBoxLayout()
-        self.rating_btns = []
+        # 自评按钮区
+        self.rating_btns: list[QPushButton] = []
+        self.rating_layout = QVBoxLayout()
+        self.rating_layout.setSpacing(8)
+        self.rating_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignHCenter)
+
         for val in (1, 2, 3, 4, 5):
-            b = QPushButton(str(val))
-            b.setStyleSheet("color: black; padding: 10px 16px;")
+            b = QPushButton(str(val), self.screen_container)
+            b.setObjectName("ratingButton")
+            # 按钮自己的样式，避免被父 widget 的样式覆盖
+            # b.setStyleSheet("color: black; padding: 8px 16px;")
             b.setVisible(False)
             b.clicked.connect(lambda _, v=val: self.record_rating(v))
             self.rating_btns.append(b)
-            btn_box.addWidget(b, alignment=QtCore.Qt.AlignmentFlag.AlignHCenter)
-        root.addLayout(btn_box)
+            self.rating_layout.addWidget(b, alignment=QtCore.Qt.AlignmentFlag.AlignHCenter)
 
-        # 键盘快捷键 1~5
+        screen_layout.addSpacing(10)
+        screen_layout.addLayout(self.rating_layout)
+
+        screen_layout.addStretch()
+
+        # 倒计时更新计时器（用于 _show_fullscreen_message）
+        self._countdown_updater: QtCore.QTimer | None = None
+        self._countdown_value: int = 0
+        self._countdown_template: str = ""
+
+    # ==================== 全局快捷键 ====================
+    def _build_shortcuts(self):
+        # 评分 1~5：应用级快捷键，在全屏时同样有效
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
-        self.shortcuts = []
+        self.shortcuts: list[QShortcut] = []
+
         for key in [
             QtCore.Qt.Key.Key_1,
             QtCore.Qt.Key.Key_2,
@@ -241,15 +343,17 @@ class Page7Widget(QWidget):
         ]:
             sc = QShortcut(QKeySequence(key), self)
             sc.setContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
-            sc.activated.connect(lambda k=key: self._shortcut_record(int(k) - int(QtCore.Qt.Key.Key_0)))
+            sc.activated.connect(
+                lambda k=key: self._shortcut_record(int(k) - int(QtCore.Qt.Key.Key_0))
+            )
             self.shortcuts.append(sc)
 
-        # ESC 中断保存
+        # ESC：中断实验
         self.shortcut_esc = QShortcut(QKeySequence(QtCore.Qt.Key.Key_Escape), self)
         self.shortcut_esc.setContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
         self.shortcut_esc.activated.connect(self.abort_and_finalize)
 
-    # -------------------- 与 Page2 的时间交互 --------------------
+    # ==================== 与 Page2 的时间交互 ====================
     def _get_eeg_time_from_page(self):
         """
         从 Page2 获取当前最新的 EEG 时间（秒），
@@ -288,7 +392,7 @@ class Page7Widget(QWidget):
             self.trial_logs[idx]["task_end_time"] = t
             self.eeg_exp_end = t
 
-    # -------------------- 入口 --------------------
+    # ==================== 入口：开始实验 ====================
     def on_start_clicked(self):
         name = self.name_input.text().strip()
         if not name:
@@ -356,7 +460,6 @@ class Page7Widget(QWidget):
         self.eeg_exp_end = None
         try:
             if hasattr(eeg_page, "start_saving"):
-                # 把本次实验的 run_dir 传给 Page2，让 EEG CSV & markers.csv 写到同一目录
                 eeg_page.start_saving(self.run_dir)
         except Exception:
             # 即使 EEG 保存出错，也不阻断范式本身
@@ -367,32 +470,35 @@ class Page7Widget(QWidget):
         if first_time is not None:
             self.eeg_exp_start = first_time
 
-        # UI 切换
-        self.instruction.hide()
-        self.start_btn.hide()
-        self.name_input.parent().hide()
-
+        # UI 切换：隐藏首页卡片，进入全屏
+        self.center_card.hide()
         self.trial_logs = []
         self.trial_index = -1
         self.logical_ms = int(self.initial_countdown * 1000)  # 仅内部计数
 
-        # 初始倒计时（无背景色，仅文字提示）
+        self._enter_fullscreen()
+
+        # 初始倒计时（只显示一行文字 + 倒计时数字，整体为白底）
         self._show_fullscreen_message(
             "{n}秒后将开始实验",
             self.initial_countdown,
-            plain=True,
+            bg="#e6ffea",
+            fg="#000000",
+            plain=False,
             next_callback=self._start_next_trial,
         )
 
-    # -------------------- trial 流程 --------------------
+    # ==================== trial 流程 ====================
     def _start_next_trial(self):
         self.trial_index += 1
         if self.trial_index >= len(self.trial_plan):
-            # 全部结束，收尾倒计时（无背景色）
+            # 全部结束，收尾倒计时
             self._show_fullscreen_message(
                 "{n}秒后实验结束",
                 self.end_countdown,
-                plain=True,
+                bg="#e6ffea",
+                fg="#000000",
+                plain=False,
                 next_callback=self._finish_and_save,
             )
             return
@@ -403,7 +509,7 @@ class Page7Widget(QWidget):
         self._stop_assess_timer()
         self._stop_task_timer()
 
-        # ---------- 按范式预计算本 trial 的各阶段时长（ms） ----------
+        # ---------- 预计算本 trial 的各阶段时长（ms） ----------
         prompt_ms = int(self.prompt_duration * 1000)
 
         # 1秒步进随机：闭区间 [tmin, tmax]
@@ -418,14 +524,13 @@ class Page7Widget(QWidget):
         task_start_ms = self.logical_ms + prompt_ms
         task_end_ms = task_start_ms + task_ms
 
-        # 记录日志骨架：task_start_time / task_end_time 使用“校准电脑时间”（秒），
-        # 这里先占位，具体在 Task 阶段开始/结束时写入
+        # 记录日志骨架
         log = {
             "condition": self.current_condition,
             "task_start_ms": task_start_ms,
             "task_end_ms": task_end_ms,
-            "task_start_time": None,  # 由 _stage_task 中记录
-            "task_end_time": None,    # 由 _enter_assess 中记录
+            "task_start_time": None,
+            "task_end_time": None,
             "durations": {
                 "prompt": int(self.prompt_duration),
                 "task": int(task_sec),
@@ -470,7 +575,7 @@ class Page7Widget(QWidget):
         self._show_stage(
             task_text,
             dur,
-            bg="#ffffff",
+            bg="#ffffff",           # 文本块白底，整屏也是白色，看起来就像普通文字
             fg="#000000",
             next_stage=self._enter_assess,
             show_cross=True,
@@ -503,7 +608,7 @@ class Page7Widget(QWidget):
         self._setup_rating_controls()
 
         # 设置评估阶段样式与首帧文案
-        self._apply_bg("#bde0fe")
+        self._apply_bg("#bde0fe")   # 只给文字块上浅蓝底
         self._apply_fg("#000000")
         self.countdown_label.hide()
         self.stage_label.show()
@@ -536,7 +641,6 @@ class Page7Widget(QWidget):
             self._stage_break()
 
     def _current_assess_question(self) -> str:
-        """根据当前条件返回对应提问句。"""
         cond = self.current_condition
         if cond == "慢走":
             return "刚刚是否认真在想象慢走？"
@@ -562,12 +666,13 @@ class Page7Widget(QWidget):
         if self.pending_rating is not None:
             self.trial_logs[-1]["rating_label"] = self.scale_labels.get(self.pending_rating)
 
-        # 休息阶段逐秒提示：请休息N秒
+        # 休息阶段：文本块浅绿色，底色仍然是白色
         self._show_fullscreen_message(
             "请休息{n}秒",
             int(self.break_duration),
             bg="#e6ffea",
             fg="#000000",
+            plain=False,
             next_callback=self._finalize_trial_and_continue,
         )
 
@@ -576,7 +681,7 @@ class Page7Widget(QWidget):
         self.logical_ms += self.trial_logs[-1]["total_ms"]
         self._start_next_trial()
 
-    # -------------------- 显示与计时 --------------------
+    # ==================== 显示与计时 ====================
     def _show_stage(
         self,
         text: str,
@@ -586,13 +691,22 @@ class Page7Widget(QWidget):
         next_stage=None,
         show_cross: bool = False,
     ):
+        # 只给 stage_label 加背景色与前景色，其他区域保持白色
         self._apply_bg(bg)
         self._apply_fg(fg)
+
         self.stage_label.setText(text)
         self.stage_label.show()
         self.countdown_label.hide()
+        self.task_count_label.hide()
         if not show_cross:
             self.cross_label.hide()
+
+        # 自评按钮不在此阶段展示
+        for b in self.rating_btns:
+            if not self.is_assessing:
+                b.setVisible(False)
+
         QtCore.QTimer.singleShot(int(seconds * 1000), next_stage)
 
     def _show_fullscreen_message(
@@ -604,20 +718,42 @@ class Page7Widget(QWidget):
         plain: bool = False,
         next_callback=None,
     ):
-        if plain:
-            self._clear_styles()
-        else:
-            if bg is not None:
-                self._apply_bg(bg)
-            if fg is not None:
-                self._apply_fg(fg)
+        """
+        用于初始/结束/休息这些只有一行文字 + 倒计时数字的阶段。
+        - plain=True：纯白背景 + 黑色文字；
+        - plain=False 且 bg/fg 不为空：给倒计时 label 加一个有底色的“条”，其它地方仍是白色。
+        """
+        # 清理 stage 区域与按钮
         self.stage_label.hide()
         self.task_count_label.hide()
         self.cross_label.hide()
+        for b in self.rating_btns:
+            b.setVisible(False)
+
+        if plain or bg is None:
+            # 纯白底 + 黑字
+            self.countdown_label.setStyleSheet("color: black;")
+        else:
+            fg_color = fg or "#000000"
+            style = (
+                f"color:{fg_color};"
+                f"background-color:{bg};"
+                "padding: 12px 28px; border-radius: 8px;"
+            )
+            self.countdown_label.setStyleSheet(style)
+
         self.countdown_label.show()
         self._countdown_value = int(seconds)
         self._countdown_template = template
         self.countdown_label.setText(template.format(n=self._countdown_value))
+
+        if self._countdown_updater is not None:
+            try:
+                self._countdown_updater.stop()
+                self._countdown_updater.deleteLater()
+            except Exception:
+                pass
+
         self._countdown_updater = QtCore.QTimer(self)
         self._countdown_updater.timeout.connect(lambda: self._tick(next_callback))
         self._countdown_updater.start(1000)
@@ -625,24 +761,43 @@ class Page7Widget(QWidget):
     def _tick(self, next_callback):
         self._countdown_value -= 1
         if self._countdown_value > 0:
-            self.countdown_label.setText(self._countdown_template.format(n=self._countdown_value))
+            self.countdown_label.setText(
+                self._countdown_template.format(n=self._countdown_value)
+            )
         else:
-            self._countdown_updater.stop()
+            if self._countdown_updater is not None:
+                self._countdown_updater.stop()
             self.countdown_label.hide()
             if callable(next_callback):
                 next_callback()
 
-    def _apply_bg(self, color: str):
-        self.setStyleSheet(f"background-color:{color};")
+    # ---- 只给 stage_label 加底色 / 前景色 ----
+    def _apply_bg(self, color: str | None):
+        self._current_bg = color
+        if color:
+            self.stage_label.setStyleSheet(
+                f"background-color:{color}; color:{self._current_fg};"
+                "padding: 18px 36px; border-radius: 8px;"
+            )
+        else:
+            self.stage_label.setStyleSheet(f"color:{self._current_fg};")
 
     def _apply_fg(self, color: str):
-        self.stage_label.setStyleSheet(f"color:{color};")
+        self._current_fg = color
+        if self._current_bg:
+            self.stage_label.setStyleSheet(
+                f"background-color:{self._current_bg}; color:{color};"
+                "padding: 18px 36px; border-radius: 8px;"
+            )
+        else:
+            self.stage_label.setStyleSheet(f"color:{color};")
         self.countdown_label.setStyleSheet(f"color:{color};")
         self.cross_label.setStyleSheet(f"color:{color};")
         self.task_count_label.setStyleSheet(f"color:{color};")
 
     def _clear_styles(self):
-        self.setStyleSheet("")
+        self._current_bg = None
+        self._current_fg = "#000000"
         self.stage_label.setStyleSheet("")
         self.countdown_label.setStyleSheet("")
         self.cross_label.setStyleSheet("")
@@ -666,8 +821,8 @@ class Page7Widget(QWidget):
                 pass
             self._task_timer = None
 
+    # ==================== 快捷评分 ====================
     def _shortcut_record(self, val: int):
-        # 仅在评估期且 val 在量表范围内时有效
         if 1 <= val <= self.scale_points:
             self.record_rating(val)
 
@@ -680,7 +835,7 @@ class Page7Widget(QWidget):
             suffix = f" - {label}" if label else ""
             self.stage_label.setText(f"已记录自我评分: {value}{suffix}")
 
-    # -------------------- 结束与中断 --------------------
+    # ==================== 结束与中断 ====================
     def _finish_and_save(self):
         """
         正常完成所有 trial + 结束倒计时后调用：
@@ -723,6 +878,19 @@ class Page7Widget(QWidget):
         self._reset_ui()
 
     def _reset_ui(self):
+        # 停止所有计时器
+        if self._countdown_updater is not None:
+            try:
+                self._countdown_updater.stop()
+                self._countdown_updater.deleteLater()
+            except Exception:
+                pass
+            self._countdown_updater = None
+
+        self._stop_assess_timer()
+        self._stop_task_timer()
+
+        # 清理实验界面
         self._clear_styles()
         self.stage_label.hide()
         self.countdown_label.hide()
@@ -730,9 +898,9 @@ class Page7Widget(QWidget):
         self.task_count_label.hide()
         for b in self.rating_btns:
             b.setVisible(False)
-        self.instruction.show()
-        self.start_btn.show()
-        self.name_input.parent().show()
+
+        # 恢复首页卡片
+        self.center_card.show()
         self.name_input.setFocus()
 
         self.trial_index = -1
@@ -741,46 +909,31 @@ class Page7Widget(QWidget):
         self.pending_rating = None
         self.is_assessing = False
         self.logical_ms = 0
-        self._stop_assess_timer()
-        self._stop_task_timer()
 
-        # 重置目录相关
+        # 重置目录 & 时间记录
         self.current_user_name = None
         self.user_dir = None
         self.run_dir = None
         self.run_timestamp = None
-
-        # 重置时间记录
         self.eeg_exp_start = None
         self.eeg_exp_end = None
 
-    # -------------------- 日志与工具 --------------------
+        # 退出全屏
+        self._exit_fullscreen()
+
+    # ==================== 报告与工具 ====================
     def _save_report(self, aborted: bool = False):
         """
         报告格式：
         每行：
           task_start_time,task_end_time,condition,detail
-
-        其中：
-          - task_start_time / task_end_time 为 Task 激活期的开始/结束时间（秒），
-            使用的是与 EEG CSV Time 列一致的“校准后的电脑时间轴”；
-          - detail 含：
-              prompt / task / assess / break 各阶段逻辑秒数、
-              量表点数、评分数值与文字。
-
-        报告文件保存在：
-            data/mill/<Name>/<YYYYMMDDHHMMSS>/EEGMILL_*.txt
         """
-        # 确定被试名称
         name = self.current_user_name or self.name or self.name_input.text().strip() or "unknown"
-
         flag = 'ABORT' if aborted else 'DONE'
 
-        # 优先使用本次 run 的目录：data/mill/<name>/<timestamp>
         base_dir = self.run_dir or self.user_dir or self.mi_root
         os.makedirs(base_dir, exist_ok=True)
 
-        # 文件名里的时间戳：优先用 run_timestamp，兜底用当前时间
         ts_for_name = self.run_timestamp or datetime.now().strftime('%Y%m%d%H%M%S')
 
         fname = os.path.join(
@@ -791,7 +944,6 @@ class Page7Widget(QWidget):
         try:
             with open(fname, 'w', encoding='utf-8') as f:
                 for rec in self.trial_logs:
-                    # Task 激活期的开始/结束时间（秒）
                     start_t = rec.get("task_start_time")
                     end_t = rec.get("task_end_time")
 
@@ -823,9 +975,8 @@ class Page7Widget(QWidget):
     def _make_balanced_plan(total_trials: int, conditions: list[str]) -> list[str]:
         """
         生成“分块均衡随机”的 trial 序列：
-        - total_trials 必须是 len(conditions) 的倍数（这里就是 4 的倍数）
-        - 每个 block（长度 = len(conditions)）中包含一次每个条件，但 block 内部顺序随机
-        - 拼接所有 block 后返回
+        - total_trials 必须是 len(conditions) 的倍数
+        - 每个 block 中包含一次每个条件，但 block 内部顺序随机
         """
         if not conditions:
             return []
@@ -834,12 +985,69 @@ class Page7Widget(QWidget):
             raise ValueError("total_trials must be a multiple of the number of conditions.")
 
         blocks = total_trials // n
-        plan = []
+        plan: list[str] = []
         for _ in range(blocks):
-            block = conditions[:]  # 拷贝一份
-            random.shuffle(block)  # 当前 block 随机
+            block = conditions[:]
+            random.shuffle(block)
             plan.extend(block)
         return plan
+
+    # ==================== 全屏相关 ====================
+    def _enter_fullscreen(self):
+        if self.fullscreen_win is not None:
+            return
+
+        if self._is_macos:
+            self.fullscreen_win = QtWidgets.QWidget()
+            self.fullscreen_win.setWindowFlags(
+                QtCore.Qt.WindowType.FramelessWindowHint | QtCore.Qt.WindowType.Window
+            )
+            self.fullscreen_win.setWindowState(QtCore.Qt.WindowState.WindowFullScreen)
+        else:
+            self.fullscreen_win = QtWidgets.QWidget()
+            self.fullscreen_win.setWindowFlags(
+                QtCore.Qt.WindowType.FramelessWindowHint | QtCore.Qt.WindowType.Window
+            )
+
+        layout = QVBoxLayout(self.fullscreen_win)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.screen_container.setParent(self.fullscreen_win)
+        self.screen_container.show()
+        layout.addWidget(self.screen_container)
+
+        # 全屏窗口里的 ESC 快捷键
+        self._fs_esc_shortcut = QShortcut(
+            QKeySequence(QtCore.Qt.Key.Key_Escape),
+            self.fullscreen_win
+        )
+        self._fs_esc_shortcut.setContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
+        self._fs_esc_shortcut.activated.connect(self.abort_and_finalize)
+
+        if self._is_macos:
+            self.fullscreen_win.show()
+        else:
+            self.fullscreen_win.showFullScreen()
+            self.fullscreen_win.raise_()
+            self.fullscreen_win.activateWindow()
+
+    def _exit_fullscreen(self):
+        if self.fullscreen_win is None:
+            return
+
+        if self._fs_esc_shortcut is not None:
+            try:
+                self._fs_esc_shortcut.deleteLater()
+            except Exception:
+                pass
+            self._fs_esc_shortcut = None
+
+        self.screen_container.hide()
+        self.screen_container.setParent(self)
+
+        self.fullscreen_win.close()
+        self.fullscreen_win = None
 
 
 if __name__ == "__main__":
