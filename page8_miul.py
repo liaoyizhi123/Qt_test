@@ -1,9 +1,12 @@
-# page8.py
 import os
 import sys
 import random
+import json
+import csv
+import math
 from datetime import datetime
-from PyQt6 import QtCore
+
+from PyQt6 import QtCore, QtWidgets
 from PyQt6.QtWidgets import (
     QApplication,
     QWidget,
@@ -17,24 +20,24 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QMessageBox,
     QComboBox,
+    QSizePolicy,
 )
 from PyQt6.QtGui import QKeySequence, QShortcut
 
 
-class Page8Widget(QWidget):  # 这里没有run的概念
+class Page8Widget(QWidget):
     """
-    EEG 实验范式（2 条 Task：手臂抬起、静止）。
+    EEG 实验范式单页组件（2 条 Task：手臂抬起、静止）。
 
-    时间记录逻辑（与 Page4/5/6/7 一致）：
-    - 点击“开始实验”后，立刻调用 Page2 的 start_saving(run_dir) 开始写 EEG CSV；
-      run_dir = data/arm/<Name>/<YYYYMMDDHHMMSS>。
-    - 每个 trial 的 Task 阶段：
-        * Task 开始时，从 Page2 获取“校准后的电脑时间”（秒），记为 task_start_time。
-        * Task 结束、进入自评前，再获取一次，记为 task_end_time。
-      这两个时间写入 txt 每行的前两列，可直接与 CSV 中的 Time 列对齐。
-    - 所有 trial 完成后，还有一段“X 秒后实验结束”的倒计时，等倒计时结束后，
-      调用 Page2 的 stop_saving()，然后写 txt 日志到 run_dir 下。
-    - ESC 中断时，也会 stop_saving()，并写 ABORT 日志。
+    时间记录逻辑（新版，与 Page7 一致）：
+      - 点击【开始实验】后调用 Page2.start_saving(run_dir)，
+        Page2 在 run_dir 下写 EEG CSV + triggers.csv；
+      - 在 Task 阶段开始 / 结束时，通过 Page2.set_trigger(code) 发送 trigger；
+      - triggers.csv 记录 Time,trigger（采样时刻 + 非 0 触发事件）；
+      - 实验结束 / ESC 中断时调用 Page2.stop_saving()；
+      - 之后 Page8 读取 triggers.csv 中的非 0 事件，按顺序为每个 trial
+        回填 task_start_time / task_end_time，再按原格式写 txt 报告，
+        同时生成 meta.json（包含实验 meta 和每个 trial 的 JSON 信息）。
     """
 
     def __init__(self, parent=None):
@@ -42,27 +45,57 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         self.setWindowTitle("EEG 实验范式（手臂抬起/静止）")
         self.setMinimumSize(900, 700)
 
-        # ====== 数据目录：data/arm/<Name>/<timestamp> ======
+        # ========== 当前系统类型（用于全屏窗口策略） ==========
+        self._is_macos = sys.platform.startswith("darwin")
+        self._is_windows = sys.platform.startswith("win")
+        self.fullscreen_win: QtWidgets.QWidget | None = None
+        self._fs_esc_shortcut: QShortcut | None = None
+
+        # ========== 数据目录：data/miul/<Name>/<timestamp> ==========
         self.data_root = "data"
+        # 注：这里沿用 miul 作为上肢 MI 实验根目录，如需改为 data/arm，可在此处修改。
         self.arm_root = os.path.join(self.data_root, "miul")
         os.makedirs(self.arm_root, exist_ok=True)
 
         # 当前被试 & 本次实验 run 的目录
         self.current_user_name: str | None = None
-        self.user_dir: str | None = None       # data/arm/<name>
-        self.run_dir: str | None = None        # data/arm/<name>/<timestamp>
+        self.user_dir: str | None = None   # data/miul/<name>
+        self.run_dir: str | None = None    # data/miul/<name>/<timestamp>
         self.run_timestamp: str | None = None  # YYYYMMDDHHMMSS
 
-        # ------- 默认参数 -------
-        self.initial_countdown = 10
-        self.prompt_duration = 4.0
-        self.task_min = 5.0
-        self.task_max = 6.0
-        self.assess_duration = 5.0
-        self.break_duration = 5.0
-        self.end_countdown = 10
-        self.default_trials = 12  # 必须是 2 的倍数
+        # -------------------- 默认参数 --------------------
+        self.initial_countdown = 10  # 实验开始前倒计时（秒）
+        self.prompt_duration = 4.0   # 默认 Prompt 时长（秒）
+        self.task_min = 5.0          # 默认 Task 最小（秒）
+        self.task_max = 6.0          # 默认 Task 最大（秒）
+        self.assess_duration = 5.0   # 默认自评时长（秒）
+        self.break_duration = 5.0    # 默认休息时长（秒）
+        self.end_countdown = 10      # 全部结束后的倒计时（秒）
+        self.default_trials = 12     # 默认循环次数（2 的倍数）
         self.conditions = ["手臂抬起", "静止"]
+
+        # —— trigger 映射（仅 2 条条件） ——
+        # 0: baseline
+        # 1: arm_rest_start   （静止开始）
+        # 2: arm_rest_end     （静止结束）
+        # 3: arm_raise_start  （手臂抬起开始）
+        # 4: arm_raise_end    （手臂抬起结束）
+        self.trigger_mapping: dict[str, dict[str, int]] = {
+            "静止": {"task_start": 1, "task_end": 2},
+            "手臂抬起": {"task_start": 3, "task_end": 4},
+        }
+        # code → label，用于写入 meta.json
+        self.trigger_code_labels: dict[int, str] = {
+            0: "baseline",
+            1: "arm_rest_start",
+            2: "arm_rest_end",
+            3: "arm_raise_start",
+            4: "arm_raise_end",
+        }
+        # 触发文件名（由 Page2 在 run_dir 下写入）
+        self.triggers_filename = "triggers.csv"
+        # meta 里记录的触发模式
+        self.trigger_assignment_mode: str = "unknown"  # "start_end" or "start_only"
 
         # Likert 标签
         self.likert_labels_3 = {1: "不同意", 2: "一般", 3: "同意"}
@@ -74,55 +107,86 @@ class Page8Widget(QWidget):  # 这里没有run的概念
             5: "非常同意",
         }
 
-        # ------- 状态量 -------
+        # -------------------- 状态量 --------------------
         self.name = ""
         self.total_trials = self.default_trials
         self.trial_index = -1
-        self.trial_plan = []
-        self.current_condition = None
+        self.trial_plan: list[str] = []
+        self.current_condition: str | None = None
 
-        self.trial_logs = []
-        self.pending_rating = None
+        self.trial_logs: list[dict] = []
+        self.pending_rating: int | None = None
         self.is_assessing = False
-        self._assess_timer = None
+        self._assess_timer: QtCore.QTimer | None = None
         self._assess_remaining = 0
 
-        self._task_timer = None
-        self._task_remaining_secs = 0
-        # 逻辑时间线仅内部计数，不再写入日志
+        # Task 1s 倒计时（目前保留但未展示）
+        self._task_timer: QtCore.QTimer | None = None
+        self._task_remaining_secs = 0  # 以 1 秒为单位
+
+        # 逻辑时间线（毫秒），仅内部计数使用，不写入报告
         self.logical_ms = 0
 
+        # 量表点数（3 或 5），以及当前标签引用
         self.scale_points = 5
         self.scale_labels = self.likert_labels_5
 
-        # ===== 与 EEG 采集页面（Page2）联动 =====
+        # ===== 与 EEG 采集页面（Page2）联动相关 =====
         # 在主程序中需要： page8.eeg_page = page2
         self.eeg_page = None
-        # 整个实验的起始/结束时间（与 CSV Time 同一“校准电脑时间轴”）
-        self.eeg_exp_start = None
-        self.eeg_exp_end = None
+        # 整个实验的起始/结束时间（由触发事件推断）
+        self.eeg_exp_start: float | None = None
+        self.eeg_exp_end: float | None = None
 
-        # ------- UI -------
+        # ====== UI 构建 ======
+        self._current_bg: str | None = None  # stage_label 的背景色
+        self._current_fg: str = "#000000"
+
+        self._build_main_ui()
+        self._build_screen_ui()
+        self._build_shortcuts()
+
+    # ==================== 主界面（首页：表单 + 按钮） ====================
+    def _build_main_ui(self):
         root = QVBoxLayout(self)
+        root.setContentsMargins(40, 30, 40, 30)
+        root.setSpacing(20)
         root.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.root_layout = root
 
+        # 中心卡片：放说明 + 表单 + 按钮
+        self.center_card = QtWidgets.QWidget(self)
+        self.center_card.setObjectName("centerCard")
+        self.center_card.setMaximumWidth(640)
+
+        card_layout = QVBoxLayout(self.center_card)
+        card_layout.setContentsMargins(40, 30, 40, 30)
+        card_layout.setSpacing(20)
+        card_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignTop)
+
+        # 顶部说明
         self.instruction = QLabel(
             "填写信息后点击开始。\n"
             "阶段：提示 → 任务 → 自我评估 → 休息；\n"
             "自评阶段请使用数字键或点击按钮评分。"
         )
+        self.instruction.setObjectName("instructionLabel")
         f = self.instruction.font()
         f.setPointSize(13)
         self.instruction.setFont(f)
         self.instruction.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.instruction.setWordWrap(True)
-        root.addWidget(self.instruction)
+        card_layout.addWidget(self.instruction)
 
-        # 表单
-        settings = QWidget()
-        settings.setMaximumWidth(520)
-        form = QFormLayout(settings)
+        # 配置表单区域
+        self.settings_widget = QtWidgets.QWidget(self.center_card)
+        form = QFormLayout(self.settings_widget)
         form.setFormAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        form.setLabelAlignment(
+            QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter
+        )
+        form.setHorizontalSpacing(16)
+        form.setVerticalSpacing(10)
 
         self.name_input = QLineEdit()
         form.addRow("姓名:", self.name_input)
@@ -133,98 +197,160 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         self.trials_spin.setValue(self.default_trials)
         form.addRow("循环次数(Trials):", self.trials_spin)
 
+        # Prompt 时长
         self.prompt_spin = QSpinBox()
         self.prompt_spin.setRange(1, 100)
+        self.prompt_spin.setSingleStep(1)
         self.prompt_spin.setValue(int(self.prompt_duration))
         form.addRow("Prompt 时长 (秒):", self.prompt_spin)
 
-        task_box = QHBoxLayout()
+        # Task 时长区间
+        task_widget = QtWidgets.QWidget(self.settings_widget)
+        task_box = QHBoxLayout(task_widget)
+        task_box.setContentsMargins(0, 0, 0, 0)
+        task_box.setSpacing(8)
+
         self.task_min_spin = QSpinBox()
         self.task_min_spin.setRange(1, 120)
+        self.task_min_spin.setSingleStep(1)
         self.task_min_spin.setValue(int(self.task_min))
+
         self.task_max_spin = QSpinBox()
         self.task_max_spin.setRange(1, 120)
+        self.task_max_spin.setSingleStep(1)
         self.task_max_spin.setValue(int(self.task_max))
-        task_box.addWidget(QLabel("Task 区间 (秒):"))
+
         task_box.addWidget(self.task_min_spin)
         task_box.addWidget(self.task_max_spin)
-        form.addRow(task_box)
 
+        form.addRow("Task 区间 (秒):", task_widget)
+
+        # 自评与休息时长
         self.assess_spin = QDoubleSpinBox()
         self.assess_spin.setDecimals(0)
         self.assess_spin.setRange(1, 120)
+        self.assess_spin.setSingleStep(1)
         self.assess_spin.setValue(self.assess_duration)
         form.addRow("Self-assessment 时长 (秒):", self.assess_spin)
 
         self.break_spin = QDoubleSpinBox()
         self.break_spin.setDecimals(0)
         self.break_spin.setRange(1, 300)
+        self.break_spin.setSingleStep(1)
         self.break_spin.setValue(self.break_duration)
         form.addRow("Break 时长 (秒):", self.break_spin)
 
+        # 自评量表选择：3 点或 5 点
         self.scale_combo = QComboBox()
         self.scale_combo.addItem("1 - 3（不同意 / 一般 / 同意）", 3)
         self.scale_combo.addItem("1 - 5（非常不同意 → 非常同意）", 5)
-        self.scale_combo.setCurrentIndex(1)  # 默认 5 点
+        self.scale_combo.setCurrentIndex(1)  # 默认 5 点量表
         form.addRow("自评量表:", self.scale_combo)
 
+        card_layout.addWidget(self.settings_widget)
+
+        # 开始按钮
         self.start_btn = QPushButton("开始实验")
+        self.start_btn.setObjectName("startButton")
         self.start_btn.clicked.connect(self.on_start_clicked)
+        card_layout.addWidget(self.start_btn, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
 
-        root.addWidget(settings)
-        root.addWidget(self.start_btn, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
+        root.addStretch()
+        root.addWidget(self.center_card, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
+        root.addStretch()
 
-        # 大显示区
-        self.stage_label = QLabel("")
-        fs = self.stage_label.font()
-        fs.setPointSize(42)
-        self.stage_label.setFont(fs)
-        self.stage_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.stage_label.hide()
-        root.addWidget(self.stage_label)
+    # ==================== 实验显示界面（全屏窗口内容） ====================
+    def _build_screen_ui(self):
+        self.screen_container = QtWidgets.QWidget(self)
+        self.screen_container.setObjectName("full_screen")
+        self.screen_container.hide()
 
-        self.countdown_label = QLabel("")
-        fc = self.countdown_label.font()
-        fc.setPointSize(32)
-        self.countdown_label.setFont(fc)
-        self.countdown_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
-        self.countdown_label.hide()
-        root.addWidget(self.countdown_label)
+        screen_layout = QVBoxLayout(self.screen_container)
+        screen_layout.setContentsMargins(40, 40, 40, 40)
+        screen_layout.setSpacing(18)
 
-        self.cross_label = QLabel("+")
+        screen_layout.addStretch()
+
+        # 注视十字
+        self.cross_label = QLabel("+", self.screen_container)
         fx = self.cross_label.font()
         fx.setPointSize(160)
         fx.setBold(True)
         self.cross_label.setFont(fx)
         self.cross_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.cross_label.hide()
-        root.addWidget(self.cross_label)
+        screen_layout.addWidget(self.cross_label, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
 
-        # Task 倒计时标签（保留用于样式统一）
-        self.task_count_label = QLabel("")
+        # 主文字区域
+        self.stage_label = QLabel("", self.screen_container)
+        fs = self.stage_label.font()
+        fs.setPointSize(42)
+        self.stage_label.setFont(fs)
+        self.stage_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.stage_label.setWordWrap(True)
+        self.stage_label.setSizePolicy(
+            QSizePolicy.Policy.Preferred,
+            QSizePolicy.Policy.Preferred,
+        )
+        self.stage_label.setMinimumWidth(800)
+        self.stage_label.hide()
+
+        self.stage_wrapper = QWidget(self.screen_container)
+        h = QHBoxLayout(self.stage_wrapper)
+        h.setContentsMargins(0, 0, 0, 0)
+        h.setSpacing(0)
+        h.addStretch()
+        h.addWidget(self.stage_label)
+        h.addStretch()
+        screen_layout.addWidget(self.stage_wrapper)
+
+        # 倒计时文字
+        self.countdown_label = QLabel("", self.screen_container)
+        fc = self.countdown_label.font()
+        fc.setPointSize(42)
+        self.countdown_label.setFont(fc)
+        self.countdown_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.countdown_label.hide()
+        screen_layout.addWidget(self.countdown_label, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
+
+        # Task 内数字倒计时（目前不使用，但保留）
+        self.task_count_label = QLabel("", self.screen_container)
         ft = self.task_count_label.font()
         ft.setPointSize(48)
         ft.setBold(True)
         self.task_count_label.setFont(ft)
         self.task_count_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.task_count_label.hide()
-        root.addWidget(self.task_count_label)
+        screen_layout.addWidget(self.task_count_label, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
 
-        # 自评分按钮（最多 5 个）
-        btn_box = QVBoxLayout()
-        self.rating_btns = []
+        # 自评按钮区
+        self.rating_btns: list[QPushButton] = []
+        self.rating_layout = QVBoxLayout()
+        self.rating_layout.setSpacing(8)
+        self.rating_layout.setAlignment(QtCore.Qt.AlignmentFlag.AlignHCenter)
+
         for val in (1, 2, 3, 4, 5):
-            b = QPushButton(str(val))
-            b.setStyleSheet("color: black; padding: 10px 16px;")
+            b = QPushButton(str(val), self.screen_container)
+            b.setObjectName("ratingButton")
             b.setVisible(False)
             b.clicked.connect(lambda _, v=val: self.record_rating(v))
             self.rating_btns.append(b)
-            btn_box.addWidget(b, alignment=QtCore.Qt.AlignmentFlag.AlignHCenter)
-        root.addLayout(btn_box)
+            self.rating_layout.addWidget(b, alignment=QtCore.Qt.AlignmentFlag.AlignHCenter)
 
-        # 快捷键 1~5
+        screen_layout.addSpacing(10)
+        screen_layout.addLayout(self.rating_layout)
+        screen_layout.addStretch()
+
+        # 倒计时更新计时器
+        self._countdown_updater: QtCore.QTimer | None = None
+        self._countdown_value: int = 0
+        self._countdown_template: str = ""
+
+    # ==================== 全局快捷键 ====================
+    def _build_shortcuts(self):
         self.setFocusPolicy(QtCore.Qt.FocusPolicy.StrongFocus)
-        self.shortcuts = []
+        self.shortcuts: list[QShortcut] = []
+
         for key in [
             QtCore.Qt.Key.Key_1,
             QtCore.Qt.Key.Key_2,
@@ -239,51 +365,11 @@ class Page8Widget(QWidget):  # 这里没有run的概念
             )
             self.shortcuts.append(sc)
 
-        # ESC 中断保存
         self.shortcut_esc = QShortcut(QKeySequence(QtCore.Qt.Key.Key_Escape), self)
         self.shortcut_esc.setContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
         self.shortcut_esc.activated.connect(self.abort_and_finalize)
 
-    # ------- 与 Page2 的时间交互（校准电脑时间） -------
-    def _get_eeg_time_from_page(self):
-        """
-        从 Page2 获取当前最新的 EEG 时间（秒），
-        使用的是与 CSV Time 列一致的“校准后的电脑时间轴”。
-        若未能获取则返回 None。
-        """
-        eeg_page = getattr(self, "eeg_page", None)
-        if eeg_page is None:
-            return None
-        getter = getattr(eeg_page, "get_last_eeg_time", None)
-        if getter is None:
-            return None
-        try:
-            return getter()
-        except Exception:
-            return None
-
-    def _record_task_start_time_for_current_trial(self):
-        """在 Task 阶段开始时调用，记录当前 trial 的开始时间（校准电脑时间，秒）。"""
-        t = self._get_eeg_time_from_page()
-        if t is None:
-            return
-        idx = self.trial_index
-        if 0 <= idx < len(self.trial_logs):
-            self.trial_logs[idx]["task_start_time"] = t
-            if self.eeg_exp_start is None:
-                self.eeg_exp_start = t
-
-    def _record_task_end_time_for_current_trial(self):
-        """在 Task 阶段结束（进入自评前）调用，记录当前 trial 的结束时间（校准电脑时间，秒）。"""
-        t = self._get_eeg_time_from_page()
-        if t is None:
-            return
-        idx = self.trial_index
-        if 0 <= idx < len(self.trial_logs):
-            self.trial_logs[idx]["task_end_time"] = t
-            self.eeg_exp_end = t
-
-    # ------- 入口 -------
+    # ==================== 入口：开始实验 ====================
     def on_start_clicked(self):
         name = self.name_input.text().strip()
         if not name:
@@ -314,6 +400,7 @@ class Page8Widget(QWidget):  # 这里没有run的概念
             )
             return
 
+        # 读取用户设置
         p = int(self.prompt_spin.value())
         tmin = int(self.task_min_spin.value())
         tmax = int(self.task_max_spin.value())
@@ -329,6 +416,7 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         self.assess_duration = ta
         self.break_duration = tb
 
+        # 量表
         self.scale_points = int(self.scale_combo.currentData())
         self.scale_labels = (
             self.likert_labels_3 if self.scale_points == 3 else self.likert_labels_5
@@ -340,7 +428,7 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         # 分块均衡随机（每个 block 含一次“手臂抬起”和一次“静止”，顺序打乱）
         self.trial_plan = self._make_balanced_plan(self.total_trials, self.conditions)
 
-        # ===== 构建目录：data/arm/<name>/<timestamp>/ =====
+        # ===== 构建目录：data/miul/<name>/<timestamp>/ =====
         self.current_user_name = name
         self.user_dir = os.path.join(self.arm_root, self.current_user_name)
         os.makedirs(self.user_dir, exist_ok=True)
@@ -349,39 +437,35 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         self.run_dir = os.path.join(self.user_dir, self.run_timestamp)
         os.makedirs(self.run_dir, exist_ok=True)
 
-        # ===== 启动 EEG CSV 记录（从点击“开始实验”这一刻起） =====
+        # ===== 启动 EEG CSV / triggers.csv 记录 =====
         self.eeg_exp_start = None
         self.eeg_exp_end = None
         try:
             if hasattr(eeg_page, "start_saving"):
-                # 把本次实验 run_dir 传给 Page2，让 EEG CSV 写到这里
                 eeg_page.start_saving(self.run_dir)
         except Exception:
             # 即使保存出错，也不影响范式本身运行
             pass
 
-        # 记录整体实验起始时间（校准电脑时间）
-        first_time = self._get_eeg_time_from_page()
-        if first_time is not None:
-            self.eeg_exp_start = first_time
-
-        # UI 切换
-        self.instruction.hide()
-        self.start_btn.hide()
-        self.name_input.parent().hide()
+        # 状态初始化
+        self.center_card.hide()
         self.trial_logs = []
         self.trial_index = -1
         self.logical_ms = int(self.initial_countdown * 1000)
+        self.trigger_assignment_mode = "unknown"
 
-        # 初始倒计时
+        # 进入全屏 + 初始倒计时
+        self._enter_fullscreen()
         self._show_fullscreen_message(
             "{n}秒后将开始实验",
             self.initial_countdown,
-            plain=True,
+            bg="#e6ffea",
+            fg="#000000",
+            plain=False,
             next_callback=self._start_next_trial,
         )
 
-    # ------- 流程 -------
+    # ==================== trial 流程 ====================
     def _start_next_trial(self):
         self.trial_index += 1
         if self.trial_index >= len(self.trial_plan):
@@ -389,7 +473,9 @@ class Page8Widget(QWidget):  # 这里没有run的概念
             self._show_fullscreen_message(
                 "{n}秒后实验结束",
                 self.end_countdown,
-                plain=True,
+                bg="#e6ffea",
+                fg="#000000",
+                plain=False,
                 next_callback=self._finish_and_save,
             )
             return
@@ -401,38 +487,36 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         self._stop_task_timer()
 
         prompt_ms = int(self.prompt_duration * 1000)
-        task_sec = int(
-            random.randint(
-                min(int(self.task_min), int(self.task_max)),
-                max(int(self.task_min), int(self.task_max)),
-            )
-        )
+
+        tmin = int(self.task_min)
+        tmax = int(self.task_max)
+        task_sec = int(random.randint(min(tmin, tmax), max(tmin, tmax)))
         task_ms = task_sec * 1000
+
         assess_ms = int(self.assess_duration * 1000)
         break_ms = int(self.break_duration * 1000)
 
         task_start_ms = self.logical_ms + prompt_ms
         task_end_ms = task_start_ms + task_ms
 
-        self.trial_logs.append(
-            {
-                "condition": self.current_condition,
-                "task_start_ms": task_start_ms,
-                "task_end_ms": task_end_ms,
-                "task_start_time": None,  # Task 开始时间（校准电脑时间，秒）
-                "task_end_time": None,    # Task 结束时间（校准电脑时间，秒）
-                "durations": {
-                    "prompt": int(self.prompt_duration),
-                    "task": int(task_sec),
-                    "assess": int(self.assess_duration),
-                    "break": int(self.break_duration),
-                },
-                "rating": None,
-                "rating_label": None,
-                "scale_points": self.scale_points,
-                "total_ms": prompt_ms + task_ms + assess_ms + break_ms,
-            }
-        )
+        log = {
+            "condition": self.current_condition,
+            "task_start_ms": task_start_ms,
+            "task_end_ms": task_end_ms,
+            "task_start_time": None,
+            "task_end_time": None,
+            "durations": {
+                "prompt": int(self.prompt_duration),
+                "task": int(task_sec),
+                "assess": int(self.assess_duration),
+                "break": int(self.break_duration),
+            },
+            "rating": None,
+            "rating_label": None,
+            "scale_points": self.scale_points,
+            "total_ms": prompt_ms + task_ms + assess_ms + break_ms,
+        }
+        self.trial_logs.append(log)
 
         # Prompt
         if self.current_condition == "静止":
@@ -454,12 +538,12 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         else:
             task_text = "请想象【手臂抬起】"
 
-        # ===== Task 阶段开始：记录“校准电脑时间” =====
-        self._record_task_start_time_for_current_trial()
+        # Task 开始 trigger
+        self._send_trigger_for_current_trial(stage="task_start")
 
-        # 不展示 task 倒计时；仅显示注视十字，时长到点自动进入评估
         self.cross_label.show()
         dur = int(self.trial_logs[-1]["durations"]["task"])
+
         self._show_stage(
             task_text,
             dur,
@@ -469,9 +553,18 @@ class Page8Widget(QWidget):  # 这里没有run的概念
             show_cross=True,
         )
 
+    def _tick_task(self):
+        self._task_remaining_secs -= 1
+        if self._task_remaining_secs > 0:
+            self.task_count_label.setText(str(self._task_remaining_secs))
+        else:
+            self._stop_task_timer()
+            self.task_count_label.setText("0")
+            self.task_count_label.hide()
+
     def _enter_assess(self):
-        # ===== Task 阶段结束：记录“校准电脑时间” =====
-        self._record_task_end_time_for_current_trial()
+        # Task 结束 trigger
+        self._send_trigger_for_current_trial(stage="task_end")
 
         self.cross_label.hide()
         self.task_count_label.hide()
@@ -481,6 +574,7 @@ class Page8Widget(QWidget):  # 这里没有run的概念
     def _stage_assess(self):
         self.is_assessing = True
         self._assess_remaining = int(self.assess_duration)
+
         self._setup_rating_controls()
 
         self._apply_bg("#bde0fe")
@@ -519,9 +613,7 @@ class Page8Widget(QWidget):  # 这里没有run的概念
             return "刚刚是否什么都没想？"
 
     def _update_assess_text(self):
-        assess_text = (
-            f"{self._current_assess_question()}\n请在 {self._assess_remaining} 秒内作答"
-        )
+        assess_text = f"{self._current_assess_question()}\n请在 {self._assess_remaining} 秒内作答"
         self.stage_label.setText(assess_text)
 
     def _stage_break(self):
@@ -538,6 +630,7 @@ class Page8Widget(QWidget):  # 这里没有run的概念
             int(self.break_duration),
             bg="#e6ffea",
             fg="#000000",
+            plain=False,
             next_callback=self._finalize_trial_and_continue,
         )
 
@@ -545,44 +638,183 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         self.logical_ms += self.trial_logs[-1]["total_ms"]
         self._start_next_trial()
 
-    # ------- 显示与计时 -------
-    def _show_stage(self, text, seconds, bg, fg, next_stage=None, show_cross=False):
+    # ==================== trigger 相关 ====================
+    def _send_trigger_for_current_trial(self, stage: str):
+        """
+        根据当前 condition 和阶段（task_start / task_end），
+        通过 Page2.set_trigger 发送 trigger。
+        """
+        eeg_page = getattr(self, "eeg_page", None)
+        if eeg_page is None:
+            return
+
+        setter = getattr(eeg_page, "set_trigger", None)
+        if setter is None:
+            return
+
+        cond = self.current_condition
+        if not cond:
+            return
+
+        mapping = self.trigger_mapping.get(cond)
+        if not mapping:
+            return
+
+        code = mapping.get(stage)
+        if not code:
+            return
+
+        try:
+            setter(int(code))
+        except Exception:
+            pass
+
+    def _update_trial_times_from_triggers(self):
+        """
+        从 triggers.csv 中回填每个 trial 的开始/结束时间，
+        并估算整体 eeg_exp_start / eeg_exp_end。
+        """
+        self.trigger_assignment_mode = "unknown"
+        self.eeg_exp_start = None
+        self.eeg_exp_end = None
+
+        if not self.run_dir:
+            return
+
+        triggers_path = os.path.join(self.run_dir, self.triggers_filename)
+        if not os.path.exists(triggers_path):
+            return
+
+        events: list[tuple[float, int]] = []
+        try:
+            with open(triggers_path, "r", encoding="utf-8") as f:
+                reader = csv.reader(f)
+                next(reader, None)  # 跳过表头
+                for row in reader:
+                    if len(row) < 2:
+                        continue
+                    try:
+                        t = float(row[0])
+                        code = int(float(row[1]))
+                    except Exception:
+                        continue
+                    if code != 0:
+                        events.append((t, code))
+        except Exception as e:
+            QMessageBox.warning(self, "触发文件读取失败", f"读取 {self.triggers_filename} 失败：{e}")
+            return
+
+        if not events:
+            return
+
+        events.sort(key=lambda x: x[0])
+
+        n_trials = len(self.trial_logs)
+        n_events = len(events)
+        if n_trials == 0:
+            return
+
+        # 如果触发事件数量足够多，按 (start,end) 成对分配；否则只用 start + 预设时长
+        if n_events >= 2 * n_trials:
+            mode = "start_end"
+        else:
+            mode = "start_only"
+        self.trigger_assignment_mode = mode
+
+        for i, rec in enumerate(self.trial_logs):
+            start_t = float("nan")
+            end_t = float("nan")
+
+            if mode == "start_end":
+                idx_start = 2 * i
+                idx_end = 2 * i + 1
+                if idx_start < n_events:
+                    start_t = events[idx_start][0]
+                if idx_end < n_events:
+                    end_t = events[idx_end][0]
+                elif not math.isnan(start_t):
+                    end_t = start_t + float(rec["durations"]["task"])
+            else:
+                if i < n_events:
+                    start_t = events[i][0]
+                    end_t = start_t + float(rec["durations"]["task"])
+
+            rec["task_start_time"] = start_t
+            rec["task_end_time"] = end_t
+
+            if not math.isnan(start_t):
+                if self.eeg_exp_start is None or start_t < self.eeg_exp_start:
+                    self.eeg_exp_start = start_t
+            if not math.isnan(end_t):
+                if self.eeg_exp_end is None or end_t > self.eeg_exp_end:
+                    self.eeg_exp_end = end_t
+
+    # ==================== 显示与计时 ====================
+    def _show_stage(
+        self,
+        text: str,
+        seconds: float,
+        bg: str,
+        fg: str,
+        next_stage=None,
+        show_cross: bool = False,
+    ):
         self._apply_bg(bg)
         self._apply_fg(fg)
+
         self.stage_label.setText(text)
         self.stage_label.show()
         self.countdown_label.hide()
+        self.task_count_label.hide()
         if not show_cross:
             self.cross_label.hide()
+
+        for b in self.rating_btns:
+            if not self.is_assessing:
+                b.setVisible(False)
+
         QtCore.QTimer.singleShot(int(seconds * 1000), next_stage)
 
     def _show_fullscreen_message(
         self,
-        template,
-        seconds,
-        bg=None,
-        fg=None,
-        plain=False,
+        template: str,
+        seconds: int,
+        bg: str | None = None,
+        fg: str | None = None,
+        plain: bool = False,
         next_callback=None,
     ):
-        if plain:
-            self._clear_styles()
-        else:
-            if bg is not None:
-                self._apply_bg(bg)
-            if fg is not None:
-                self._apply_fg(fg)
         self.stage_label.hide()
         self.task_count_label.hide()
         self.cross_label.hide()
+        for b in self.rating_btns:
+            b.setVisible(False)
+
+        if plain or bg is None:
+            self.countdown_label.setStyleSheet("color: black;")
+        else:
+            fg_color = fg or "#000000"
+            style = (
+                f"color:{fg_color};"
+                f"background-color:{bg};"
+                "padding: 12px 28px; border-radius: 8px;"
+            )
+            self.countdown_label.setStyleSheet(style)
+
         self.countdown_label.show()
         self._countdown_value = int(seconds)
         self._countdown_template = template
         self.countdown_label.setText(template.format(n=self._countdown_value))
+
+        if self._countdown_updater is not None:
+            try:
+                self._countdown_updater.stop()
+                self._countdown_updater.deleteLater()
+            except Exception:
+                pass
+
         self._countdown_updater = QtCore.QTimer(self)
-        self._countdown_updater.timeout.connect(
-            lambda: self._tick(next_callback)
-        )
+        self._countdown_updater.timeout.connect(lambda: self._tick(next_callback))
         self._countdown_updater.start(1000)
 
     def _tick(self, next_callback):
@@ -592,22 +824,38 @@ class Page8Widget(QWidget):  # 这里没有run的概念
                 self._countdown_template.format(n=self._countdown_value)
             )
         else:
-            self._countdown_updater.stop()
+            if self._countdown_updater is not None:
+                self._countdown_updater.stop()
             self.countdown_label.hide()
             if callable(next_callback):
                 next_callback()
 
-    def _apply_bg(self, color):
-        self.setStyleSheet(f"background-color:{color};")
+    def _apply_bg(self, color: str | None):
+        self._current_bg = color
+        if color:
+            self.stage_label.setStyleSheet(
+                f"background-color:{color}; color:{self._current_fg};"
+                "padding: 18px 36px; border-radius: 8px;"
+            )
+        else:
+            self.stage_label.setStyleSheet(f"color:{self._current_fg};")
 
-    def _apply_fg(self, color):
-        self.stage_label.setStyleSheet(f"color:{color};")
+    def _apply_fg(self, color: str):
+        self._current_fg = color
+        if self._current_bg:
+            self.stage_label.setStyleSheet(
+                f"background-color:{self._current_bg}; color:{color};"
+                "padding: 18px 36px; border-radius: 8px;"
+            )
+        else:
+            self.stage_label.setStyleSheet(f"color:{color};")
         self.countdown_label.setStyleSheet(f"color:{color};")
         self.cross_label.setStyleSheet(f"color:{color};")
         self.task_count_label.setStyleSheet(f"color:{color};")
 
     def _clear_styles(self):
-        self.setStyleSheet("")
+        self._current_bg = None
+        self._current_fg = "#000000"
         self.stage_label.setStyleSheet("")
         self.countdown_label.setStyleSheet("")
         self.cross_label.setStyleSheet("")
@@ -631,67 +879,73 @@ class Page8Widget(QWidget):  # 这里没有run的概念
                 pass
             self._task_timer = None
 
+    # ==================== 快捷评分 ====================
     def _shortcut_record(self, val: int):
         if 1 <= val <= self.scale_points:
             self.record_rating(val)
 
     def record_rating(self, value: int):
-        if (
-            self.is_assessing
-            and self.pending_rating is None
-            and 1 <= value <= self.scale_points
-        ):
+        if self.is_assessing and self.pending_rating is None and 1 <= value <= self.scale_points:
             self.pending_rating = int(value)
             for b in self.rating_btns:
                 b.setVisible(False)
             label = self.scale_labels.get(value, "")
-            self.stage_label.setText(
-                f"已记录自我评分: {value}" + (f" - {label}" if label else "")
-            )
+            suffix = f" - {label}" if label else ""
+            self.stage_label.setText(f"已记录自我评分: {value}{suffix}")
 
-    # ------- 结束与中断 -------
+    # ==================== 结束与中断 ====================
     def _finish_and_save(self):
         """
-        正常完成所有 trial + 结束倒计时后调用：
+        正常完成所有 trial + 结束倒计时：
         - 停止 EEG 保存
-        - 写入报告
+        - 从 triggers.csv 回填时间
+        - 写入 txt 报告 + meta.json
         - 重置 UI
         """
         eeg_page = getattr(self, "eeg_page", None)
-        if eeg_page is not None:
-            last_time = self._get_eeg_time_from_page()
-            if last_time is not None:
-                self.eeg_exp_end = last_time
-            if hasattr(eeg_page, "stop_saving"):
-                try:
-                    eeg_page.stop_saving()
-                except Exception:
-                    pass
+        if eeg_page is not None and hasattr(eeg_page, "stop_saving"):
+            try:
+                eeg_page.stop_saving()
+            except Exception:
+                pass
 
-        self._save_report()
+        self._update_trial_times_from_triggers()
+        self._save_report(aborted=False)
+        self._save_meta_json(aborted=False)
         self._reset_ui()
 
     def abort_and_finalize(self):
         """
         ESC 中断：
         - 尝试停止 EEG 保存
-        - 写 ABORT 日志
+        - 从 triggers.csv 回填已有 trial 的时间
+        - 写 ABORT 报告 + meta.json
+        - 重置 UI
         """
         eeg_page = getattr(self, "eeg_page", None)
-        if eeg_page is not None:
-            last_time = self._get_eeg_time_from_page()
-            if last_time is not None:
-                self.eeg_exp_end = last_time
-            if hasattr(eeg_page, "stop_saving"):
-                try:
-                    eeg_page.stop_saving()
-                except Exception:
-                    pass
+        if eeg_page is not None and hasattr(eeg_page, "stop_saving"):
+            try:
+                eeg_page.stop_saving()
+            except Exception:
+                pass
 
+        self._update_trial_times_from_triggers()
         self._save_report(aborted=True)
+        self._save_meta_json(aborted=True)
         self._reset_ui()
 
     def _reset_ui(self):
+        if self._countdown_updater is not None:
+            try:
+                self._countdown_updater.stop()
+                self._countdown_updater.deleteLater()
+            except Exception:
+                pass
+            self._countdown_updater = None
+
+        self._stop_assess_timer()
+        self._stop_task_timer()
+
         self._clear_styles()
         self.stage_label.hide()
         self.countdown_label.hide()
@@ -699,9 +953,8 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         self.task_count_label.hide()
         for b in self.rating_btns:
             b.setVisible(False)
-        self.instruction.show()
-        self.start_btn.show()
-        self.name_input.parent().show()
+
+        self.center_card.show()
         self.name_input.setFocus()
 
         self.trial_index = -1
@@ -710,50 +963,38 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         self.pending_rating = None
         self.is_assessing = False
         self.logical_ms = 0
-        self._stop_assess_timer()
-        self._stop_task_timer()
 
-        # 重置目录信息
         self.current_user_name = None
         self.user_dir = None
         self.run_dir = None
         self.run_timestamp = None
-
-        # 重置时间信息
         self.eeg_exp_start = None
         self.eeg_exp_end = None
+        self.trigger_assignment_mode = "unknown"
 
-    # ------- 日志 -------
+        self._exit_fullscreen()
+
+    # ==================== 报告与 meta.json ====================
     def _save_report(self, aborted: bool = False):
         """
+        文本报告：
         每一行：
           task_start_time,task_end_time,condition,detail
 
-        其中：
-          - task_start_time / task_end_time 为 Task 激活期的开始/结束时间（秒），
-            使用的是与 EEG CSV Time 列一致的“校准后的电脑时间轴”；
-          - detail 包含：
-              prompt / task / assess / break 的逻辑秒数、
-              量表点数、评分数值、评分文字。
-
-        报告文件保存到：
-          data/arm/<Name>/<YYYYMMDDHHMMSS>/EEGMIUL_*.txt
+        其中 task_start_time / task_end_time 已由 _update_trial_times_from_triggers 回填，
+        为 Task 激活期的开始/结束时间（秒）。
         """
-        # 确定名称
         name = (
             self.current_user_name
             or self.name
             or self.name_input.text().strip()
             or "unknown"
         )
-
         flag = "ABORT" if aborted else "DONE"
 
-        # 确定目录：优先 run_dir，其次 user_dir，最后 arm_root
         base_dir = self.run_dir or self.user_dir or self.arm_root
         os.makedirs(base_dir, exist_ok=True)
 
-        # 文件名里的时间戳：优先 run_timestamp，兜底当前时间
         ts_for_name = self.run_timestamp or datetime.now().strftime("%Y%m%d%H%M%S")
 
         fname = os.path.join(
@@ -791,6 +1032,84 @@ class Page8Widget(QWidget):  # 这里没有run的概念
         except Exception as e:
             QMessageBox.critical(self, "保存失败", f"写入日志失败：{e}")
 
+    def _save_meta_json(self, aborted: bool = False):
+        """
+        meta.json 只包含：
+          - subject_name
+          - timing {...}
+          - trigger_code_labels {...}
+          - trigger_assignment_mode
+          - trials: 每个 trial 一条 JSON，结构等价于 txt 中一行
+        """
+        base_dir = self.run_dir or self.user_dir or self.arm_root
+        os.makedirs(base_dir, exist_ok=True)
+
+        name = (
+            self.current_user_name
+            or self.name
+            or self.name_input.text().strip()
+            or "unknown"
+        )
+
+        # timing 部分
+        timing = {
+            "initial_countdown": int(self.initial_countdown),
+            "prompt_duration": int(self.prompt_duration),
+            "task_min": int(self.task_min),
+            "task_max": int(self.task_max),
+            "assess_duration": int(self.assess_duration),
+            "break_duration": int(self.break_duration),
+            "end_countdown": int(self.end_countdown),
+            "assignment_mode": self.trigger_assignment_mode,
+        }
+
+        trials_json: list[dict] = []
+        for rec in self.trial_logs:
+            start_t = rec.get("task_start_time")
+            end_t = rec.get("task_end_time")
+            if isinstance(start_t, (int, float)) and not math.isnan(start_t):
+                t0 = float(start_t)
+            else:
+                t0 = None
+            if isinstance(end_t, (int, float)) and not math.isnan(end_t):
+                t1 = float(end_t)
+            else:
+                t1 = None
+
+            cond = rec.get("condition")
+            d = rec.get("durations", {})
+            rating = rec.get("rating")
+            rating_label = rec.get("rating_label")
+
+            trial_entry = {
+                "task_start_time": t0,
+                "task_end_time": t1,
+                "condition": cond,
+                "prompt": int(d.get("prompt", 0)),
+                "task": int(d.get("task", 0)),
+                "assess": int(d.get("assess", 0)),
+                "break": int(d.get("break", 0)),
+                "scale": int(rec.get("scale_points", 0)),
+                "rating": rating,
+                "rating_label": rating_label,
+            }
+            trials_json.append(trial_entry)
+
+        meta = {
+            "subject_name": name,
+            "timing": timing,
+            "trigger_code_labels": {str(k): v for k, v in self.trigger_code_labels.items()},
+            "trials": trials_json,
+        }
+
+        path = os.path.join(base_dir, "meta.json")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                json.dump(meta, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            QMessageBox.critical(self, "保存失败", f"写入 meta.json 失败：{e}")
+
+    # ==================== 其它工具 ====================
     @staticmethod
     def _make_balanced_plan(total_trials: int, conditions: list[str]) -> list[str]:
         """分块均衡随机：每个 block 含每个条件一次，block 内随机顺序。"""
@@ -802,12 +1121,68 @@ class Page8Widget(QWidget):  # 这里没有run的概念
                 "total_trials must be a multiple of the number of conditions."
             )
         blocks = total_trials // n
-        plan = []
+        plan: list[str] = []
         for _ in range(blocks):
             block = conditions[:]
             random.shuffle(block)
             plan.extend(block)
         return plan
+
+    # ==================== 全屏相关 ====================
+    def _enter_fullscreen(self):
+        if self.fullscreen_win is not None:
+            return
+
+        if self._is_macos:
+            self.fullscreen_win = QtWidgets.QWidget()
+            self.fullscreen_win.setWindowFlags(
+                QtCore.Qt.WindowType.FramelessWindowHint | QtCore.Qt.WindowType.Window
+            )
+            self.fullscreen_win.setWindowState(QtCore.Qt.WindowState.WindowFullScreen)
+        else:
+            self.fullscreen_win = QtWidgets.QWidget()
+            self.fullscreen_win.setWindowFlags(
+                QtCore.Qt.WindowType.FramelessWindowHint | QtCore.Qt.WindowType.Window
+            )
+
+        layout = QVBoxLayout(self.fullscreen_win)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        self.screen_container.setParent(self.fullscreen_win)
+        self.screen_container.show()
+        layout.addWidget(self.screen_container)
+
+        self._fs_esc_shortcut = QShortcut(
+            QKeySequence(QtCore.Qt.Key.Key_Escape),
+            self.fullscreen_win
+        )
+        self._fs_esc_shortcut.setContext(QtCore.Qt.ShortcutContext.ApplicationShortcut)
+        self._fs_esc_shortcut.activated.connect(self.abort_and_finalize)
+
+        if self._is_macos:
+            self.fullscreen_win.show()
+        else:
+            self.fullscreen_win.showFullScreen()
+            self.fullscreen_win.raise_()
+            self.fullscreen_win.activateWindow()
+
+    def _exit_fullscreen(self):
+        if self.fullscreen_win is None:
+            return
+
+        if self._fs_esc_shortcut is not None:
+            try:
+                self._fs_esc_shortcut.deleteLater()
+            except Exception:
+                pass
+            self._fs_esc_shortcut = None
+
+        self.screen_container.hide()
+        self.screen_container.setParent(self)
+
+        self.fullscreen_win.close()
+        self.fullscreen_win = None
 
 
 if __name__ == "__main__":
@@ -815,3 +1190,4 @@ if __name__ == "__main__":
     w = Page8Widget()
     w.show()
     sys.exit(app.exec())
+

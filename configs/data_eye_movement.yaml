@@ -1,14 +1,14 @@
 dataset:
-  name: my_eeg_dataset_eye_movement
-  path: data/eye_movement_eeg
+  name: my_eeg_dataset_eye_movement  # 映射加载函数
+  path: data/eye_movement_eeg  # 数据集路径
   
   device:
     sampling_rate: 1000
     n_channels: 3
     channels_names:
-      - PFC_0
-      - PFC_1
-      - PFC_2
+      - AF7
+      - AFz_FPz
+      - AF8
   
   annotations:
     label_projection:
@@ -18,7 +18,7 @@ dataset:
       1: 'right'
       2: 'two'
       3: 'three'
-      4: 'normal'
+      4: 'static'
     str_mapping:
       # 'up': 'up'
       # 'down': 'down'
@@ -26,7 +26,7 @@ dataset:
       'right': 'right'
       'two': 'two'
       'three': 'three'
-      'normal': 'normal'
+      'static': 'static'
   
   slicing:
     t_min: 0.0  # 原本为0.0，为了画TF_image改为-0.2
