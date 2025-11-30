@@ -46,7 +46,7 @@ QLabel#proj_title {
 QPushButton{
     background-color: #e7f1fe;           /* 🌟浅蓝灰卡片底色 */
     color: #333333;                      /* 深灰文字 */
-    border-radius: 10px;                 /* 圆角 */
+    border-radius: 5px;               
     /* border: 1px solid #d1d9e6;            略微偏蓝的浅灰边框 */
     padding: 6px 12px;                   /* 内边距 */
     font-size: 14px;
@@ -79,7 +79,7 @@ QPushButton#ratingButton {
     max-height: 50px;
     padding: 0px 8px;
     margin: 6px 10px 6px 6px;
-    border-radius: 10px;            /* 四边圆角 */
+    border-radius: 10px;           
     
 }
 
