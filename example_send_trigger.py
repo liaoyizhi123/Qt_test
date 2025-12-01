@@ -21,7 +21,7 @@ if __name__ == '__main__':
 
     if isTriggerIn:
         ## example send triggers through TriggerIn
-        triggerin = TriggerIn("COM3")
+        triggerin = TriggerIn("/dev/cu.usbserial-DK0C10O8")
         # test if device is valid
         flag = triggerin.validate_device()
         print(flag)

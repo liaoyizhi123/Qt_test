@@ -21,6 +21,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QComboBox,
     QSizePolicy,
+    QRadioButton,
 )
 from PyQt6.QtGui import QKeySequence, QShortcut
 
@@ -30,13 +31,22 @@ class Page7Widget(QWidget):
     EEG 实验范式单页组件（4 条 Task：慢走、慢跑、快跑、静止）。
 
     时间记录逻辑（新版）：
-      - 点击【开始实验】后调用 Page2.start_saving(run_dir)，Page2 开始写 EEG CSV + triggers.csv；
-      - 在 Task 阶段开始 / 结束时，通过 Page2.set_trigger(code) 发送 trigger；
-      - triggers.csv 中记录 Time,trigger（非 0 触发事件 + 其它采样点的 0）；
-      - 实验结束 / ESC 中断时调用 Page2.stop_saving()；
-      - 之后 Page7 读取 triggers.csv 非 0 事件，按顺序回填每个 trial 的
-        task_start_time / task_end_time，再按原格式写 txt 报告，
-        并生成 meta.json（包含实验 meta 和每个 trial 的 JSON 信息）。
+      - Leichi：
+        - 点击【开始实验】后调用 Page2.start_saving(run_dir)，
+          Page2 开始写 EEG CSV + triggers.csv；
+        - 在 Task 阶段开始 / 结束时，通过 Page2.set_trigger(code) 发送 trigger；
+        - triggers.csv 中记录 Time,trigger（非 0 触发事件 + 其它采样点的 0）；
+        - 实验结束 / ESC 中断时调用 Page2.stop_saving()；
+        - 之后 Page7 读取 triggers.csv 非 0 事件，按顺序回填每个 trial 的
+          task_start_time / task_end_time，再按原格式写 txt 报告，
+          并生成 meta.json（包含实验 meta 和每个 trial 的 JSON 信息）。
+
+      - Neuracle：
+        - 仅在开始实验前检查 TriggerBox 串口是否连接；
+        - 每个 trial 的开始/结束阶段通过 self.neuracle_trigger.output_event_data(code)
+          直接向 TriggerBox 打码；
+        - 本软件不保存 EEG CSV / triggers.csv，txt/meta.json 中的 task_start_time /
+          task_end_time 置为 None。
     """
 
     def __init__(self, parent=None):
@@ -44,11 +54,15 @@ class Page7Widget(QWidget):
         self.setWindowTitle("EEG 实验范式")
         self.setMinimumSize(900, 700)
 
-        # 当前系统类型（用于全屏窗口策略）
+        # 当前系统类型（用于全屏窗口策略、串口等）
         self._is_macos = sys.platform.startswith("darwin")
         self._is_windows = sys.platform.startswith("win")
         self.fullscreen_win: QtWidgets.QWidget | None = None
         self._fs_esc_shortcut: QShortcut | None = None
+
+        # 采集设备类型：'Leichi' 或 'Neuracle'
+        self.device_type: str = "Leichi"
+        self.neuracle_trigger = None  # Neuracle 模式下的 TriggerIn 实例
 
         # ====== MI 数据根目录：data/mill ======
         self.data_root = "data"
@@ -100,7 +114,7 @@ class Page7Widget(QWidget):
             7: "sprint_start",
             8: "sprint_end",
         }
-        # 触发文件名（由 Page2 在 run_dir 下写入）
+        # 触发文件名（由 Page2 在 run_dir 下写入，仅 Leichi 模式用）
         self.triggers_filename = "triggers.csv"
         # meta 里记录的触发模式
         self.trigger_assignment_mode: str = "unknown"  # "start_end" or "start_only"
@@ -194,6 +208,23 @@ class Page7Widget(QWidget):
         form.setHorizontalSpacing(16)
         form.setVerticalSpacing(10)
 
+        # 采集设备选择（第一行）
+        device_widget = QtWidgets.QWidget(self.settings_widget)
+        device_layout = QHBoxLayout(device_widget)
+        device_layout.setContentsMargins(0, 0, 0, 0)
+        device_layout.setSpacing(12)
+
+        self.device_leichi_radio = QRadioButton("Leichi", device_widget)
+        self.device_neuracle_radio = QRadioButton("Neuracle", device_widget)
+        self.device_leichi_radio.setChecked(True)
+
+        device_layout.addWidget(self.device_leichi_radio)
+        device_layout.addWidget(self.device_neuracle_radio)
+        device_layout.addStretch()
+
+        form.addRow("Device:", device_widget)
+
+        # 姓名
         self.name_input = QLineEdit()
         form.addRow("姓名:", self.name_input)
 
@@ -387,19 +418,76 @@ class Page7Widget(QWidget):
             QMessageBox.warning(self, "错误", "循环次数必须为4的倍数（如4/8/12/…）！")
             return
 
-        eeg_page = getattr(self, "eeg_page", None)
-        if eeg_page is None or not hasattr(eeg_page, "is_listening"):
-            QMessageBox.warning(self, "错误", "未找到 EEG 采集页面，请在主程序中确保已创建并注入 Page2Widget。")
-            return
+        # 采集设备选择
+        if self.device_leichi_radio.isChecked():
+            self.device_type = "Leichi"
+        else:
+            self.device_type = "Neuracle"
 
-        if not eeg_page.is_listening():
-            QMessageBox.warning(
-                self,
-                "提示",
-                "请先在【首页】点击“开始监测信号”，\n"
-                "确保已经开始接收EEG数据后，再启动本实验范式。"
-            )
-            return
+        # Leichi：保持原来的监听判断逻辑
+        if self.device_type == "Leichi":
+            if self.eeg_page is None or not hasattr(self.eeg_page, "is_listening"):
+                QMessageBox.warning(
+                    self,
+                    "错误",
+                    "未找到 EEG 采集页面，请在主程序中确保已创建并注入 Page2Widget。"
+                )
+                return
+
+            if not self.eeg_page.is_listening():
+                QMessageBox.warning(
+                    self,
+                    "提示",
+                    "请先在【首页】点击“开始监测信号”，\n"
+                    "确保已经开始接收EEG数据后，再启动本实验范式。"
+                )
+                return
+
+        # Neuracle：不检查 is_listening，而是检查串口连接
+        else:  # self.device_type == "Neuracle"
+            # 根据系统选择默认串口
+            if self._is_windows:
+                port_name = "COM3"
+            elif self._is_macos:
+                port_name = "/dev/cu.usbserial-DK0C10O8"
+            else:
+                QMessageBox.warning(
+                    self,
+                    "错误",
+                    "当前操作系统未配置 Neuracle 串口名称，请改用 Leichi 或修改代码。"
+                )
+                return
+
+            try:
+                from neuracle_lib.triggerBox import TriggerIn
+            except Exception as e:
+                QMessageBox.critical(
+                    self,
+                    "错误",
+                    f"无法导入 Neuracle 库 neuracle_lib.triggerBox：{e}"
+                )
+                return
+
+            try:
+                self.neuracle_trigger = TriggerIn(port_name)
+                flag = self.neuracle_trigger.validate_device()
+            except Exception:
+                self.neuracle_trigger = None
+                QMessageBox.critical(
+                    self,
+                    "错误",
+                    "Neuracle 串口连接失败，请连接 TriggerBox 并检查串口名称。"
+                )
+                return
+
+            if not flag:
+                self.neuracle_trigger = None
+                QMessageBox.critical(
+                    self,
+                    "错误",
+                    "Neuracle 串口无效，请检查连接（Invalid Serial!）。"
+                )
+                return
 
         # 读取用户设置
         p = int(self.prompt_spin.value())
@@ -439,14 +527,17 @@ class Page7Widget(QWidget):
         self.run_dir = os.path.join(self.user_dir, self.run_timestamp)
         os.makedirs(self.run_dir, exist_ok=True)
 
-        # 启动 EEG 保存
+        # 启动 EEG 保存：
+        # - Leichi：调用 Page2.start_saving(run_dir) 写 CSV + triggers.csv
+        # - Neuracle：不在本软件中保存 EEG / triggers.csv
         self.eeg_exp_start = None
         self.eeg_exp_end = None
-        try:
-            if hasattr(eeg_page, "start_saving"):
-                eeg_page.start_saving(self.run_dir)
-        except Exception:
-            pass
+        if self.device_type == "Leichi" and self.eeg_page is not None:
+            try:
+                if hasattr(self.eeg_page, "start_saving"):
+                    self.eeg_page.start_saving(self.run_dir)
+            except Exception:
+                pass
 
         # UI 切换
         self.center_card.hide()
@@ -503,7 +594,7 @@ class Page7Widget(QWidget):
             "condition": self.current_condition,
             "task_start_ms": task_start_ms,
             "task_end_ms": task_end_ms,
-            "task_start_time": None,
+            "task_start_time": None,  # Leichi: 后续用 triggers.csv 回填；Neuracle: 保持 None
             "task_end_time": None,
             "durations": {
                 "prompt": int(self.prompt_duration),
@@ -644,14 +735,12 @@ class Page7Widget(QWidget):
 
     # ==================== trigger 相关 ====================
     def _send_trigger_for_current_trial(self, stage: str):
-        eeg_page = getattr(self, "eeg_page", None)
-        if eeg_page is None:
-            return
-
-        setter = getattr(eeg_page, "set_trigger", None)
-        if setter is None:
-            return
-
+        """
+        根据当前 condition 和 stage 发送 trigger。
+        - Leichi：调用 self.eeg_page.set_trigger(code)
+        - Neuracle：调用 self.neuracle_trigger.output_event_data(code)
+        """
+        # 条件映射
         cond = self.current_condition
         if not cond:
             return
@@ -664,15 +753,29 @@ class Page7Widget(QWidget):
         if not code:
             return
 
-        try:
-            setter(code)
-        except Exception:
-            pass
+        # Leichi 模式：通过 Page2Widget 下发 trigger，并由 Page2 写入 triggers.csv
+        if self.device_type == "Leichi":
+            if self.eeg_page is None:
+                return
+            try:
+                self.eeg_page.set_trigger(int(code))
+            except Exception:
+                pass
+
+        # Neuracle 模式：通过 TriggerBox 串口打码，本软件不保存 CSV
+        elif self.device_type == "Neuracle":
+            if self.neuracle_trigger is None:
+                return
+            try:
+                self.neuracle_trigger.output_event_data(int(code))
+            except Exception:
+                pass
 
     def _update_trial_times_from_triggers(self):
         """
-        从 triggers.csv 中回填每个 trial 的开始/结束时间，
-        并估算整体 eeg_exp_start / eeg_exp_end，用于 meta（如果以后想扩展）。
+        仅在 Leichi 模式下，从 triggers.csv 中回填每个 trial 的开始/结束时间，
+        并估算整体 eeg_exp_start / eeg_exp_end，用于 meta。
+        Neuracle 模式下不调用该函数。
         """
         self.trigger_assignment_mode = "unknown"
         self.eeg_exp_start = None
@@ -894,27 +997,33 @@ class Page7Widget(QWidget):
 
     # ==================== 结束与中断 ====================
     def _finish_and_save(self):
-        eeg_page = getattr(self, "eeg_page", None)
-        if eeg_page is not None and hasattr(eeg_page, "stop_saving"):
+        # 停止 EEG 保存：仅 Leichi 模式会在本软件中保存 CSV
+        if self.device_type == "Leichi" and self.eeg_page is not None:
             try:
-                eeg_page.stop_saving()
+                if hasattr(self.eeg_page, "stop_saving"):
+                    self.eeg_page.stop_saving()
             except Exception:
                 pass
 
-        self._update_trial_times_from_triggers()
+        # 仅 Leichi 模式尝试从 triggers.csv 回填时间
+        if self.device_type == "Leichi":
+            self._update_trial_times_from_triggers()
+
         self._save_report(aborted=False)
         self._save_meta_json(aborted=False)
         self._reset_ui()
 
     def abort_and_finalize(self):
-        eeg_page = getattr(self, "eeg_page", None)
-        if eeg_page is not None and hasattr(eeg_page, "stop_saving"):
+        if self.device_type == "Leichi" and self.eeg_page is not None:
             try:
-                eeg_page.stop_saving()
+                if hasattr(self.eeg_page, "stop_saving"):
+                    self.eeg_page.stop_saving()
             except Exception:
                 pass
 
-        self._update_trial_times_from_triggers()
+        if self.device_type == "Leichi":
+            self._update_trial_times_from_triggers()
+
         self._save_report(aborted=True)
         self._save_meta_json(aborted=True)
         self._reset_ui()
@@ -956,14 +1065,19 @@ class Page7Widget(QWidget):
         self.eeg_exp_start = None
         self.eeg_exp_end = None
         self.trigger_assignment_mode = "unknown"
+        self.device_type = "Leichi"
+        self.neuracle_trigger = None  # 下次 Neuracle 需重新验证
 
         self._exit_fullscreen()
 
     # ==================== 报告与 meta.json ====================
     def _save_report(self, aborted: bool = False):
         """
-        仍然按原 txt 格式写一份文本日志：
+        按原 txt 格式写一份文本日志：
         t0,t1,condition,prompt=..|task=..|...
+
+        - Leichi 模式：t0,t1 来源于 triggers.csv 中的真实时间；
+        - Neuracle 模式：t0,t1 为 NaN（因为本软件不保存 EEG / trigger 时间）。
         """
         name = self.current_user_name or self.name or self.name_input.text().strip() or "unknown"
         flag = 'ABORT' if aborted else 'DONE'
@@ -1012,14 +1126,19 @@ class Page7Widget(QWidget):
         """
         meta.json 只包含：
           - subject_name
+          - device_name
           - timing {...}
           - trigger_code_labels {...}
           - trials: 每个 trial 一条 JSON，结构等价于 txt 中一行
+
+        - Leichi：task_start_time / task_end_time 为真实时间；
+        - Neuracle：task_start_time / task_end_time 为 None。
         """
         base_dir = self.run_dir or self.user_dir or self.mi_root
         os.makedirs(base_dir, exist_ok=True)
 
         name = self.current_user_name or self.name or self.name_input.text().strip() or "unknown"
+        device_name = self.device_type  # <<<<<<<<<< 新增这一行：记录当前设备名称
 
         # timing 部分
         timing = {
@@ -1067,6 +1186,7 @@ class Page7Widget(QWidget):
 
         meta = {
             "subject_name": name,
+            "device_name": device_name,  # <<<<<<<<<< 在 meta.json 中增加 device_name 字段
             "timing": timing,
             "trigger_code_labels": {str(k): v for k, v in self.trigger_code_labels.items()},
             "trials": trials_json,
@@ -1078,6 +1198,7 @@ class Page7Widget(QWidget):
                 json.dump(meta, f, ensure_ascii=False, indent=2)
         except Exception as e:
             QMessageBox.critical(self, "保存失败", f"写入 meta.json 失败：{e}")
+
 
     @staticmethod
     def _make_balanced_plan(total_trials: int, conditions: list[str]) -> list[str]:
