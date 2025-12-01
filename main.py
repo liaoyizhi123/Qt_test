@@ -1,3 +1,14 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+"""
+File: main.py
+Purpose: 
+Author: 
+Date Created: 12/01/2025
+"""
+
+
 import torch
 import sys
 from datetime import datetime
