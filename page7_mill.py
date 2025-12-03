@@ -24,29 +24,22 @@ from PyQt6.QtWidgets import (
     QRadioButton,
 )
 from PyQt6.QtGui import QKeySequence, QShortcut
+from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PyQt6.QtMultimediaWidgets import QVideoWidget
 
 
 class Page7Widget(QWidget):
     """
     EEG 实验范式单页组件（4 条 Task：慢走、慢跑、快跑、静止）。
 
-    时间记录逻辑（新版）：
-      - Leichi：
-        - 点击【开始实验】后调用 Page2.start_saving(run_dir)，
-          Page2 开始写 EEG CSV + triggers.csv；
-        - 在 Task 阶段开始 / 结束时，通过 Page2.set_trigger(code) 发送 trigger；
-        - triggers.csv 中记录 Time,trigger（非 0 触发事件 + 其它采样点的 0）；
-        - 实验结束 / ESC 中断时调用 Page2.stop_saving()；
-        - 之后 Page7 读取 triggers.csv 非 0 事件，按顺序回填每个 trial 的
-          task_start_time / task_end_time，再按原格式写 txt 报告，
-          并生成 meta.json（包含实验 meta 和每个 trial 的 JSON 信息）。
+    Leichi 模式：
+      - Page2.start_saving(run_dir) 写 EEG CSV + triggers.csv
+      - Task 开始/结束调用 Page2.set_trigger(code)
+      - 结束后调用 Page2.stop_saving()
+      - 本页读取 triggers.csv 回填 trial 时间，写 txt + meta.json
 
-      - Neuracle：
-        - 仅在开始实验前检查 TriggerBox 串口是否连接；
-        - 每个 trial 的开始/结束阶段通过 self.neuracle_trigger.output_event_data(code)
-          直接向 TriggerBox 打码；
-        - 本软件不保存 EEG CSV / triggers.csv，txt/meta.json 中的 task_start_time /
-          task_end_time 置为 None。
+    Neuracle 模式：
+      - 只负责通过 TriggerBox 打码，不保存 EEG/triggers.csv
     """
 
     def __init__(self, parent=None):
@@ -54,7 +47,7 @@ class Page7Widget(QWidget):
         self.setWindowTitle("EEG 实验范式")
         self.setMinimumSize(900, 700)
 
-        # 当前系统类型（用于全屏窗口策略、串口等）
+        # 当前系统类型（用于全屏策略、串口等）
         self._is_macos = sys.platform.startswith("darwin")
         self._is_windows = sys.platform.startswith("win")
         self.fullscreen_win: QtWidgets.QWidget | None = None
@@ -86,16 +79,22 @@ class Page7Widget(QWidget):
         self.default_trials = 16     # 默认循环次数（4 的倍数）
         self.conditions = ["慢走", "慢跑", "快跑", "静止"]
 
+        # ====== 不同条件对应的视频文件（放在 resources/videos/ 下）======
+        # walking.mp4 / jogging.mp4 / sprint.mp4 / rest.mp4
+        self.condition_video_map: dict[str, str] = {
+            "静止": os.path.join("resources", "videos", "rest.mp4"),
+            "慢走": os.path.join("resources", "videos", "walking.mp4"),
+            "慢跑": os.path.join("resources", "videos", "jogging.mp4"),
+            "快跑": os.path.join("resources", "videos", "sprint.mp4"),
+        }
+
+        # 视频播放相关对象（Task 阶段用）
+        self.media_player: QMediaPlayer | None = None
+        self.audio_output: QAudioOutput | None = None
+        self.video_widget: QVideoWidget | None = None
+        self.video_wrapper: QWidget | None = None
+
         # —— trigger 映射（按你给的语义） ——
-        # 0: baseline
-        # 1: rest_start   （静止开始）
-        # 2: rest_end     （静止结束）
-        # 3: walking_start（慢走开始）
-        # 4: walking_end  （慢走结束）
-        # 5: jogging_start（慢跑开始）
-        # 6: jogging_end  （慢跑结束）
-        # 7: sprint_start （快跑开始）
-        # 8: sprint_end   （快跑结束）
         self.trigger_mapping: dict[str, dict[str, int]] = {
             "静止": {"task_start": 1, "task_end": 2},  # rest
             "慢走": {"task_start": 3, "task_end": 4},  # walking
@@ -308,7 +307,7 @@ class Page7Widget(QWidget):
 
         screen_layout.addStretch()
 
-        # 注视十字
+        # 注视十字（保留控件，以防需要）
         self.cross_label = QLabel("+", self.screen_container)
         fx = self.cross_label.font()
         fx.setPointSize(160)
@@ -317,6 +316,29 @@ class Page7Widget(QWidget):
         self.cross_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
         self.cross_label.hide()
         screen_layout.addWidget(self.cross_label, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
+
+        # ===== 视频刺激区域：用 wrapper 居中 =====
+        self.video_widget = QVideoWidget(self.screen_container)
+        self.video_widget.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
+
+        self.video_wrapper = QWidget(self.screen_container)
+        vw_layout = QHBoxLayout(self.video_wrapper)
+        vw_layout.setContentsMargins(0, 0, 0, 0)
+        vw_layout.setSpacing(0)
+        vw_layout.addStretch()
+        vw_layout.addWidget(self.video_widget)
+        vw_layout.addStretch()
+        self.video_wrapper.hide()
+
+        screen_layout.addWidget(self.video_wrapper)
+
+        self.media_player = QMediaPlayer(self)
+        self.audio_output = QAudioOutput(self)
+        self.media_player.setAudioOutput(self.audio_output)
+        # !!! 注意：setVideoOutput 放到 _enter_fullscreen 里再绑定
 
         # 主文字区域
         self.stage_label = QLabel("", self.screen_container)
@@ -351,7 +373,7 @@ class Page7Widget(QWidget):
         self.countdown_label.hide()
         screen_layout.addWidget(self.countdown_label, alignment=QtCore.Qt.AlignmentFlag.AlignCenter)
 
-        # Task 内数字倒计时（现在没用到，但保留）
+        # Task 内数字倒计时（目前不用）
         self.task_count_label = QLabel("", self.screen_container)
         ft = self.task_count_label.font()
         ft.setPointSize(48)
@@ -424,7 +446,7 @@ class Page7Widget(QWidget):
         else:
             self.device_type = "Neuracle"
 
-        # Leichi：保持原来的监听判断逻辑
+        # Leichi：检查 Page2 是否在监听
         if self.device_type == "Leichi":
             if self.eeg_page is None or not hasattr(self.eeg_page, "is_listening"):
                 QMessageBox.warning(
@@ -443,9 +465,8 @@ class Page7Widget(QWidget):
                 )
                 return
 
-        # Neuracle：不检查 is_listening，而是检查串口连接
+        # Neuracle：检查 TriggerBox 串口
         else:  # self.device_type == "Neuracle"
-            # 根据系统选择默认串口
             if self._is_windows:
                 port_name = "COM3"
             elif self._is_macos:
@@ -527,9 +548,7 @@ class Page7Widget(QWidget):
         self.run_dir = os.path.join(self.user_dir, self.run_timestamp)
         os.makedirs(self.run_dir, exist_ok=True)
 
-        # 启动 EEG 保存：
-        # - Leichi：调用 Page2.start_saving(run_dir) 写 CSV + triggers.csv
-        # - Neuracle：不在本软件中保存 EEG / triggers.csv
+        # 启动 EEG 保存（仅 Leichi）
         self.eeg_exp_start = None
         self.eeg_exp_end = None
         if self.device_type == "Leichi" and self.eeg_page is not None:
@@ -576,6 +595,7 @@ class Page7Widget(QWidget):
         self.is_assessing = False
         self._stop_assess_timer()
         self._stop_task_timer()
+        self._stop_task_video()
 
         prompt_ms = int(self.prompt_duration * 1000)
 
@@ -594,7 +614,7 @@ class Page7Widget(QWidget):
             "condition": self.current_condition,
             "task_start_ms": task_start_ms,
             "task_end_ms": task_end_ms,
-            "task_start_time": None,  # Leichi: 后续用 triggers.csv 回填；Neuracle: 保持 None
+            "task_start_time": None,
             "task_end_time": None,
             "durations": {
                 "prompt": int(self.prompt_duration),
@@ -631,7 +651,8 @@ class Page7Widget(QWidget):
         # Task 开始 trigger
         self._send_trigger_for_current_trial(stage="task_start")
 
-        self.cross_label.show()
+        # 播放视频刺激（替代十字）
+        self._play_task_video()
         dur = int(self.trial_logs[-1]["durations"]["task"])
 
         self._show_stage(
@@ -640,7 +661,7 @@ class Page7Widget(QWidget):
             bg="#ffffff",
             fg="#000000",
             next_stage=self._enter_assess,
-            show_cross=True,
+            show_cross=False,
         )
 
     def _tick_task(self):
@@ -659,6 +680,7 @@ class Page7Widget(QWidget):
         self.cross_label.hide()
         self.task_count_label.hide()
         self._stop_task_timer()
+        self._stop_task_video()
         self._stage_assess()
 
     def _stage_assess(self):
@@ -735,12 +757,6 @@ class Page7Widget(QWidget):
 
     # ==================== trigger 相关 ====================
     def _send_trigger_for_current_trial(self, stage: str):
-        """
-        根据当前 condition 和 stage 发送 trigger。
-        - Leichi：调用 self.eeg_page.set_trigger(code)
-        - Neuracle：调用 self.neuracle_trigger.output_event_data(code)
-        """
-        # 条件映射
         cond = self.current_condition
         if not cond:
             return
@@ -753,7 +769,6 @@ class Page7Widget(QWidget):
         if not code:
             return
 
-        # Leichi 模式：通过 Page2Widget 下发 trigger，并由 Page2 写入 triggers.csv
         if self.device_type == "Leichi":
             if self.eeg_page is None:
                 return
@@ -762,7 +777,6 @@ class Page7Widget(QWidget):
             except Exception:
                 pass
 
-        # Neuracle 模式：通过 TriggerBox 串口打码，本软件不保存 CSV
         elif self.device_type == "Neuracle":
             if self.neuracle_trigger is None:
                 return
@@ -771,11 +785,54 @@ class Page7Widget(QWidget):
             except Exception:
                 pass
 
+    # ==================== 视频相关：根据条件播放 / 停止 ====================
+    def _get_video_path_for_condition(self, condition: str | None) -> str | None:
+        if not condition:
+            return None
+        return self.condition_video_map.get(condition)
+
+    def _play_task_video(self):
+        """
+        在 Task 阶段播放对应 condition 的视频。
+        - 开始播放时间 = Task 阶段开始
+        - 结束播放时间 = Task 阶段结束（_enter_assess 调用 _stop_task_video）
+        """
+        if self.media_player is None or self.video_widget is None or self.video_wrapper is None:
+            return
+
+        video_path = self._get_video_path_for_condition(self.current_condition)
+        if not video_path:
+            print(f"[Page7] 未为条件 {self.current_condition} 配置视频文件")
+            return
+
+        abs_path = os.path.abspath(video_path)
+        if not os.path.exists(abs_path):
+            print(f"[Page7] 视频文件不存在: {abs_path}")
+            return
+
+        self.cross_label.hide()
+        self.video_wrapper.show()
+        self.video_widget.show()
+
+        url = QtCore.QUrl.fromLocalFile(abs_path)
+        self.media_player.setSource(url)
+        self.media_player.play()
+
+    def _stop_task_video(self):
+        if self.media_player is not None:
+            try:
+                self.media_player.stop()
+            except Exception:
+                pass
+        if self.video_widget is not None:
+            self.video_widget.hide()
+        if self.video_wrapper is not None:
+            self.video_wrapper.hide()
+
     def _update_trial_times_from_triggers(self):
         """
         仅在 Leichi 模式下，从 triggers.csv 中回填每个 trial 的开始/结束时间，
         并估算整体 eeg_exp_start / eeg_exp_end，用于 meta。
-        Neuracle 模式下不调用该函数。
         """
         self.trigger_assignment_mode = "unknown"
         self.eeg_exp_start = None
@@ -868,7 +925,9 @@ class Page7Widget(QWidget):
         self.stage_label.show()
         self.countdown_label.hide()
         self.task_count_label.hide()
-        if not show_cross:
+        if show_cross:
+            self.cross_label.show()
+        else:
             self.cross_label.hide()
 
         for b in self.rating_btns:
@@ -889,6 +948,7 @@ class Page7Widget(QWidget):
         self.stage_label.hide()
         self.task_count_label.hide()
         self.cross_label.hide()
+        self._stop_task_video()
         for b in self.rating_btns:
             b.setVisible(False)
 
@@ -997,7 +1057,6 @@ class Page7Widget(QWidget):
 
     # ==================== 结束与中断 ====================
     def _finish_and_save(self):
-        # 停止 EEG 保存：仅 Leichi 模式会在本软件中保存 CSV
         if self.device_type == "Leichi" and self.eeg_page is not None:
             try:
                 if hasattr(self.eeg_page, "stop_saving"):
@@ -1005,7 +1064,6 @@ class Page7Widget(QWidget):
             except Exception:
                 pass
 
-        # 仅 Leichi 模式尝试从 triggers.csv 回填时间
         if self.device_type == "Leichi":
             self._update_trial_times_from_triggers()
 
@@ -1039,6 +1097,7 @@ class Page7Widget(QWidget):
 
         self._stop_assess_timer()
         self._stop_task_timer()
+        self._stop_task_video()
 
         self._clear_styles()
         self.stage_label.hide()
@@ -1066,19 +1125,12 @@ class Page7Widget(QWidget):
         self.eeg_exp_end = None
         self.trigger_assignment_mode = "unknown"
         self.device_type = "Leichi"
-        self.neuracle_trigger = None  # 下次 Neuracle 需重新验证
+        self.neuracle_trigger = None
 
         self._exit_fullscreen()
 
     # ==================== 报告与 meta.json ====================
     def _save_report(self, aborted: bool = False):
-        """
-        按原 txt 格式写一份文本日志：
-        t0,t1,condition,prompt=..|task=..|...
-
-        - Leichi 模式：t0,t1 来源于 triggers.csv 中的真实时间；
-        - Neuracle 模式：t0,t1 为 NaN（因为本软件不保存 EEG / trigger 时间）。
-        """
         name = self.current_user_name or self.name or self.name_input.text().strip() or "unknown"
         flag = 'ABORT' if aborted else 'DONE'
 
@@ -1123,24 +1175,12 @@ class Page7Widget(QWidget):
             QMessageBox.critical(self, "保存失败", f"写入日志失败：{e}")
 
     def _save_meta_json(self, aborted: bool = False):
-        """
-        meta.json 只包含：
-          - subject_name
-          - device_name
-          - timing {...}
-          - trigger_code_labels {...}
-          - trials: 每个 trial 一条 JSON，结构等价于 txt 中一行
-
-        - Leichi：task_start_time / task_end_time 为真实时间；
-        - Neuracle：task_start_time / task_end_time 为 None。
-        """
         base_dir = self.run_dir or self.user_dir or self.mi_root
         os.makedirs(base_dir, exist_ok=True)
 
         name = self.current_user_name or self.name or self.name_input.text().strip() or "unknown"
-        device_name = self.device_type  # <<<<<<<<<< 新增这一行：记录当前设备名称
+        device_name = self.device_type
 
-        # timing 部分
         timing = {
             "initial_countdown": int(self.initial_countdown),
             "prompt_duration": int(self.prompt_duration),
@@ -1151,7 +1191,6 @@ class Page7Widget(QWidget):
             "end_countdown": int(self.end_countdown),
         }
 
-        # trials：把 txt 里一行的全部信息拆成字段
         trials_json: list[dict] = []
         for rec in self.trial_logs:
             start_t = rec.get("task_start_time")
@@ -1186,7 +1225,7 @@ class Page7Widget(QWidget):
 
         meta = {
             "subject_name": name,
-            "device_name": device_name,  # <<<<<<<<<< 在 meta.json 中增加 device_name 字段
+            "device_name": device_name,
             "timing": timing,
             "trigger_code_labels": {str(k): v for k, v in self.trigger_code_labels.items()},
             "trials": trials_json,
@@ -1198,7 +1237,6 @@ class Page7Widget(QWidget):
                 json.dump(meta, f, ensure_ascii=False, indent=2)
         except Exception as e:
             QMessageBox.critical(self, "保存失败", f"写入 meta.json 失败：{e}")
-
 
     @staticmethod
     def _make_balanced_plan(total_trials: int, conditions: list[str]) -> list[str]:
@@ -1240,6 +1278,13 @@ class Page7Widget(QWidget):
         self.screen_container.setParent(self.fullscreen_win)
         self.screen_container.show()
         layout.addWidget(self.screen_container)
+
+        # 关键：在最终 parent 确定后再绑定 video output
+        if self.media_player is not None and self.video_widget is not None:
+            try:
+                self.media_player.setVideoOutput(self.video_widget)
+            except Exception as e:
+                print("[Page7] setVideoOutput 失败:", e)
 
         self._fs_esc_shortcut = QShortcut(
             QKeySequence(QtCore.Qt.Key.Key_Escape),

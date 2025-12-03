@@ -173,7 +173,7 @@ class Ui_MainWindow(QMainWindow):
         self.btn_lef_home.setIconSize(QtCore.QSize(32, 32))
         self.btn_lef_home.setObjectName("btn_lef_home")
         self.verticalLayout_8.addWidget(self.btn_lef_home)
-        self.btn_lef_home.hide()
+        # self.btn_lef_home.hide()
         # 左侧new按钮
         self.btn_lef_new = QtWidgets.QPushButton(parent=self.left_center)
         self.btn_lef_new.setMinimumSize(QtCore.QSize(0, 50))
