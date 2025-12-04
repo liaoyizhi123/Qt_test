@@ -22,7 +22,7 @@ QLabel{
 }
 
 QWidget#centerCard {
-    background-color: #f7f7fb;
+    background-color: #F9F9F9;
     border-radius: 18px;
     border: 1px solid #dddddd;
 }
