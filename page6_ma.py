@@ -680,6 +680,7 @@ from PyQt6.QtWidgets import (
     QPushButton,
     QMessageBox,
     QHBoxLayout,
+    QSizePolicy,
 )
 from PyQt6.QtGui import QKeySequence, QShortcut
 
@@ -873,6 +874,10 @@ class Page6Widget(QWidget):
     def _build_screen_ui(self):
         self.screen_container = QtWidgets.QWidget(self)
         self.screen_container.setObjectName("full_screen")
+        self.screen_container.setSizePolicy(
+            QSizePolicy.Policy.Expanding,
+            QSizePolicy.Policy.Expanding,
+        )
         self.screen_container.hide()
 
         screen_layout = QVBoxLayout(self.screen_container)
@@ -1160,7 +1165,7 @@ class Page6Widget(QWidget):
 
         expr, disp, _ = self.sequence[self.current_index]
         self.stage_label.setText(f"{expr} = {disp}")
-        self.activateWindow()
+        # self.activateWindow()
         self.setFocus()
 
         if self.separate_phases:
