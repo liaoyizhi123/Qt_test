@@ -546,12 +546,15 @@ class Page5Widget(QWidget):
 
         w, c = self.sequence[self.current_index]
         self.stage_label.setText(w)
-        # 背景浅灰，文字颜色为刺激颜色
         self.stage_label.setStyleSheet(
             f"background-color: lightgray; color: {c}; padding: 18px 36px; border-radius: 8px;"
         )
-        self.activateWindow()
-        self.setFocus()
+        if self.fullscreen_win is not None:
+            self.fullscreen_win.raise_()
+            self.fullscreen_win.activateWindow()
+        else:
+            self.activateWindow()
+            self.setFocus()
 
         if self.separate_phases:
             # 展示期：按钮隐藏
