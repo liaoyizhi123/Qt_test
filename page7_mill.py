@@ -2164,6 +2164,11 @@ class Page7Widget(QWidget):
         self.video_wrapper.show()
         self.video_widget.show()
 
+        try:
+            self.media_player.setVideoOutput(self.video_widget)
+        except Exception as exc:
+            print("[Page7] setVideoOutput 失败:", exc)
+
         url = QtCore.QUrl.fromLocalFile(abs_path)
         self.media_player.setSource(url)
         self.media_player.play()
@@ -2172,7 +2177,8 @@ class Page7Widget(QWidget):
         if self.media_player is not None:
             try:
                 self.media_player.stop()
-                # QVideoWidget 会保留上一帧，重置 source 可以清空残影
+                # QVideoWidget 会保留上一帧，重置 source/输出可以清空残影
+                self.media_player.setVideoOutput(None)
                 self.media_player.setSource(QtCore.QUrl())
             except Exception:
                 pass
