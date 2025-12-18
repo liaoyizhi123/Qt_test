@@ -2172,6 +2172,8 @@ class Page7Widget(QWidget):
         if self.media_player is not None:
             try:
                 self.media_player.stop()
+                # QVideoWidget 会保留上一帧，重置 source 可以清空残影
+                self.media_player.setSource(QtCore.QUrl())
             except Exception:
                 pass
         if self.video_widget is not None:
